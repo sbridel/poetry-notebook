@@ -1,0 +1,396 @@
+.poets-notebook-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.pn-tab-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 6px 0 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.pn-tab-btn {
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 4px 4px 0 0;
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.pn-tab-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.pn-tab-active {
+  color: var(--text-normal);
+  border-bottom: 2px solid var(--interactive-accent);
+  font-weight: 600;
+}
+
+.pn-tab-body {
+  padding: 10px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.pn-banner {
+  background: var(--background-modifier-error, #4a2020);
+  color: var(--text-on-accent, #fff);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.85em;
+  margin-bottom: 10px;
+}
+
+.pn-placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 20px 0;
+  text-align: center;
+}
+
+.pn-textarea {
+  width: 100%;
+  min-height: 140px;
+  font-family: var(--font-text);
+  resize: vertical;
+}
+
+.pn-btn-row {
+  margin: 8px 0;
+}
+
+.pn-options-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin: 6px 0;
+  font-size: 0.85em;
+}
+
+.pn-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.pn-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.pn-line-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  border-left: 3px solid var(--text-muted);
+  background: var(--background-secondary);
+  border-radius: 0 4px 4px 0;
+}
+
+.pn-line-text {
+  flex: 1;
+  font-family: var(--font-monospace, monospace);
+  font-size: 0.9em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: help;
+}
+
+.pn-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.pn-badge {
+  font-size: 0.72em;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pn-rhyme-badge {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--text-muted);
+  background: transparent;
+}
+
+.pn-meter-badge {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: white;
+  background: var(--text-muted);
+}
+
+.pn-meter-badge.pn-meter-exact { background: #3fb950; }
+.pn-meter-badge.pn-meter-approx { background: #d29922; }
+.pn-meter-badge.pn-meter-none,
+.pn-meter-badge.pn-meter-unknown { background: var(--text-muted); }
+
+.pn-syll-badge {
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, white);
+}
+
+.pn-summary {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+
+.pn-summary-total {
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+/* Rhymes tab */
+.pn-rhyme-search-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pn-rhyme-input {
+  flex: 1;
+  padding: 6px 8px;
+}
+
+.pn-rhyme-filters-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 0.85em;
+}
+
+.pn-filter-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.pn-rhyme-filter-input {
+  width: 60px;
+  padding: 3px 6px;
+}
+
+.pn-external-link {
+  margin-left: auto;
+  font-size: 0.85em;
+}
+
+.pn-rhyme-results {
+  margin-top: 10px;
+}
+
+.pn-rhyme-section {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+}
+
+.pn-rhyme-section h4 {
+  margin: 0 0 8px 0;
+  font-size: 0.9em;
+}
+
+.pn-rhyme-perfect {
+  background: var(--background-secondary);
+}
+
+.pn-rhyme-near {
+  background: transparent;
+  border-style: dashed;
+}
+
+.pn-rhyme-near h4 {
+  color: var(--text-muted);
+}
+
+.pn-rhyme-online {
+  background: transparent;
+  border-color: var(--interactive-accent);
+}
+
+.pn-rhyme-syll-group {
+  margin-bottom: 4px;
+  font-size: 0.88em;
+  line-height: 1.5;
+}
+
+.pn-rhyme-syll-label {
+  color: var(--text-muted);
+  margin-right: 6px;
+  font-weight: 600;
+}
+
+.pn-rhyme-loading {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.85em;
+}
+
+/* Synonyms tab */
+.pn-synonym-add-row {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+  align-items: center;
+}
+
+.pn-synonym-add-label {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pn-synonym-chip-saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pn-synonym-remove {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-weight: 700;
+  padding: 0 4px;
+}
+
+.pn-synonym-remove:hover {
+  color: var(--text-error, #e05252);
+}
+
+.pn-synonym-chip {
+  display: inline-block;
+  margin: 2px 4px 2px 0;
+  padding: 2px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--interactive-accent);
+  background: transparent;
+  color: var(--text-normal);
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.pn-synonym-chip:hover {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, white);
+}
+
+/* Definitions tab */
+.pn-etymology {
+  background: var(--background-secondary);
+}
+
+.pn-definition-list {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.pn-definition-list li {
+  margin-bottom: 4px;
+  font-size: 0.9em;
+}
+
+/* Guide tab */
+.pn-guide-section {
+  margin-bottom: 20px;
+}
+
+.pn-guide-section h3 {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: 4px;
+}
+
+.pn-guide-content {
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.pn-guide-table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  width: 100%;
+}
+
+.pn-guide-table th, .pn-guide-table td {
+  border: 1px solid var(--background-modifier-border);
+  padding: 4px 8px;
+  text-align: left;
+  font-size: 0.9em;
+}
+
+.pn-guide-table th {
+  background: var(--background-secondary);
+}
+
+/* Inspiration tab */
+.pn-inspiration-word-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pn-inspiration-word {
+  font-size: 0.88em;
+  line-height: 1.4;
+}
+
+/* Random tab */
+.pn-random-btn {
+  display: block;
+  margin: 10px auto 20px auto;
+}
+
+.pn-random-card {
+  text-align: center;
+  padding: 20px;
+}
+
+.pn-random-card h2 {
+  margin: 0 0 8px 0;
+}
+
+.pn-random-note {
+  color: var(--text-normal);
+  margin-bottom: 6px;
+}
+
+.pn-random-theme {
+  color: var(--text-muted);
+  font-size: 0.8em;
+  margin-bottom: 12px;
+}
+
+.pn-random-links {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  font-size: 0.85em;
+}
