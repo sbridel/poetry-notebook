@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
   "description": "Syllable, meter and rhyme analysis for English poetry (CMUdict-based, with optional Datamuse online lookups).",
-  "author": "",
+  "author": "Sébastien Wallachia",
   "authorUrl": "",
   "isDesktopOnly": false
 }
