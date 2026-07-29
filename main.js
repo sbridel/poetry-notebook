@@ -448,6 +448,18 @@ async function fetchDatamuseSynonyms(word) {
   return Array.isArray(data) ? data.map((d) => d.word) : [];
 }
 
+async function fetchDatamuseAntonyms(word) {
+  const url = `https://api.datamuse.com/words?rel_ant=${encodeURIComponent(word.toLowerCase())}&max=50`;
+  const res = await requestUrl({
+    url,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+    },
+  });
+  const data = res.json;
+  return Array.isArray(data) ? data.map((d) => d.word) : [];
+}
+
 // ============================================================
 // Wiktionary (English) — definitions + etymology, on demand only.
 // Uses the plain-text `extracts` endpoint (explaintext=1) rather than raw
@@ -1074,24 +1086,53 @@ class PoetsNotebookView extends ItemView {
     const datamuseCheckbox = datamuseLabel.createEl('input', { attr: { type: 'checkbox' } });
     datamuseLabel.appendText(' Include Datamuse (online)');
 
-    const addRow = wrap.createDiv({ cls: 'pn-synonym-add-row' });
-    const addLabel = addRow.createSpan({ cls: 'pn-synonym-add-label', text: 'Synonym for “…”:' });
-    const addInput = addRow.createEl('input', {
-      cls: 'pn-rhyme-input',
-      attr: { type: 'text', placeholder: 'e.g. glimmer' },
+    const synPanel = this.buildRelationPanel(wrap, {
+      kind: 'synonyms',
+      label: 'Synonym',
+      fetchOnline: fetchDatamuseSynonyms,
+      addToDict: (w, s) => this.plugin.addSynonymToPersonalDictionary(w, s),
+      removeFromDict: (w, s) => this.plugin.removeSynonymFromPersonalDictionary(w, s),
     });
+    const antPanel = this.buildRelationPanel(wrap, {
+      kind: 'antonyms',
+      label: 'Antonym',
+      fetchOnline: fetchDatamuseAntonyms,
+      addToDict: (w, s) => this.plugin.addAntonymToPersonalDictionary(w, s),
+      removeFromDict: (w, s) => this.plugin.removeAntonymFromPersonalDictionary(w, s),
+    });
+
+    const doSearch = async () => {
+      const word = wordInput.value.trim();
+      if (!word) return;
+      await Promise.all([
+        synPanel.search(word, datamuseCheckbox.checked),
+        antPanel.search(word, datamuseCheckbox.checked),
+      ]);
+    };
+
+    searchBtn.addEventListener('click', doSearch);
+    wordInput.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') doSearch(); });
+  }
+
+  // Builds one Synonyms- or Antonyms-shaped panel: a manual add row plus a
+  // results area (personal dictionary list with remove buttons, and an
+  // optional Datamuse section). `opts.kind` is the personal-dictionary key
+  // ('synonyms' or 'antonyms'). Returns { search(word, includeOnline) }.
+  buildRelationPanel(wrap, opts) {
+    wrap.createEl('h4', { cls: 'pn-relation-panel-title', text: opts.label + 's' });
+
+    const addRow = wrap.createDiv({ cls: 'pn-synonym-add-row' });
+    const addLabel = addRow.createSpan({ cls: 'pn-synonym-add-label', text: `${opts.label} for “…”:` });
+    const addInput = addRow.createEl('input', { cls: 'pn-rhyme-input', attr: { type: 'text' } });
     const addBtn = addRow.createEl('button', { text: 'Save to my dictionary' });
 
     const results = wrap.createDiv({ cls: 'pn-rhyme-results' });
+    let currentWord = '';
 
-    wordInput.addEventListener('input', () => {
-      const w = wordInput.value.trim();
-      addLabel.setText(w ? `Synonym for “${w}”:` : 'Synonym for “…”:');
-    });
-
-    const renderPersonalSection = (word) => {
-      const key = word.toLowerCase().trim();
-      const list = (this.plugin.personalDictionary.synonyms && this.plugin.personalDictionary.synonyms[key]) || [];
+    const renderPersonalSection = () => {
+      const key = currentWord.toLowerCase().trim();
+      const dict = this.plugin.personalDictionary[opts.kind] || {};
+      const list = dict[key] || [];
       let section = results.querySelector('.pn-synonym-personal');
       if (!section) {
         section = results.createDiv({ cls: 'pn-rhyme-section pn-synonym-personal' });
@@ -1100,49 +1141,47 @@ class PoetsNotebookView extends ItemView {
       section.empty();
       section.createEl('h4', { text: `My dictionary (${list.length})` });
       if (list.length === 0) {
-        section.createDiv({ cls: 'pn-rhyme-word-list', text: 'No synonyms saved for this word yet.' });
+        section.createDiv({ cls: 'pn-rhyme-word-list', text: `No ${opts.label.toLowerCase()}s saved for this word yet.` });
       } else {
-        const list_el = section.createDiv({ cls: 'pn-rhyme-word-list' });
+        const listEl = section.createDiv({ cls: 'pn-rhyme-word-list' });
         list.forEach((s) => {
-          const chip = list_el.createSpan({ cls: 'pn-synonym-chip pn-synonym-chip-saved' });
+          const chip = listEl.createSpan({ cls: 'pn-synonym-chip pn-synonym-chip-saved' });
           chip.appendText(s + ' ');
           const removeBtn = chip.createEl('span', { cls: 'pn-synonym-remove', text: '×' });
           removeBtn.addEventListener('click', async () => {
-            await this.plugin.removeSynonymFromPersonalDictionary(word, s);
-            renderPersonalSection(word);
+            await opts.removeFromDict(currentWord, s);
+            renderPersonalSection();
           });
         });
       }
     };
 
-    const doSearch = async () => {
-      const word = wordInput.value.trim();
-      if (!word) return;
+    const search = async (word, includeOnline) => {
+      currentWord = word;
+      addLabel.setText(`${opts.label} for “${word}”:`);
       results.empty();
-      renderPersonalSection(word);
+      renderPersonalSection();
 
-      if (datamuseCheckbox.checked) {
+      if (includeOnline) {
         const loading = results.createDiv({ cls: 'pn-rhyme-loading', text: 'Querying Datamuse…' });
         try {
-          const syns = await fetchDatamuseSynonyms(word);
+          const found = await opts.fetchOnline(word);
           loading.remove();
-          const personalSet = new Set(
-            ((this.plugin.personalDictionary.synonyms && this.plugin.personalDictionary.synonyms[word.toLowerCase()]) || [])
-          );
-          const extra = syns.filter((s) => !personalSet.has(s.toLowerCase()) && s.toLowerCase() !== word.toLowerCase());
+          const personalSet = new Set(((this.plugin.personalDictionary[opts.kind] || {})[word.toLowerCase()]) || []);
+          const extra = found.filter((s) => !personalSet.has(s.toLowerCase()) && s.toLowerCase() !== word.toLowerCase());
           const section = results.createDiv({ cls: 'pn-rhyme-section pn-rhyme-online' });
           section.createEl('h4', { text: `Online — Datamuse (${extra.length})` });
           const list = section.createDiv({ cls: 'pn-rhyme-word-list' });
           if (extra.length === 0) {
-            list.setText('No additional synonyms found.');
+            list.setText(`No additional ${opts.label.toLowerCase()}s found.`);
           } else {
             extra.forEach((s, i) => {
               const btn = list.createEl('button', { cls: 'pn-synonym-chip', text: s });
               btn.setAttr('title', `Click to save "${s}" into your personal dictionary`);
               btn.addEventListener('click', async () => {
-                const res = await this.plugin.addSynonymToPersonalDictionary(word, s);
+                const res = await opts.addToDict(word, s);
                 new Notice(res.ok ? `Saved "${s}" to your dictionary` : 'Could not save — see console');
-                if (res.ok) renderPersonalSection(word);
+                if (res.ok) renderPersonalSection();
               });
               if (i < extra.length - 1) list.appendText(' ');
             });
@@ -1153,22 +1192,20 @@ class PoetsNotebookView extends ItemView {
       }
     };
 
-    searchBtn.addEventListener('click', doSearch);
-    wordInput.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') doSearch(); });
-
     addBtn.addEventListener('click', async () => {
-      const word = wordInput.value.trim();
-      const syn = addInput.value.trim();
-      if (!word) { new Notice('Type a word in the search box first — the manual field only adds a synonym FOR that word.'); return; }
-      if (!syn) { new Notice('Type the synonym to save.'); return; }
-      const res = await this.plugin.addSynonymToPersonalDictionary(word, syn);
+      const value = addInput.value.trim();
+      if (!currentWord) { new Notice('Search a word first — the manual field only adds an entry FOR that word.'); return; }
+      if (!value) { new Notice(`Type the ${opts.label.toLowerCase()} to save.`); return; }
+      const res = await opts.addToDict(currentWord, value);
       if (!res.ok && res.reason === 'self') {
-        new Notice(`"${syn}" is the same as "${word}" — a word can't be its own synonym.`);
+        new Notice(`"${value}" is the same as "${currentWord}" — a word can't be its own ${opts.label.toLowerCase()}.`);
         return;
       }
-      new Notice(res.ok ? `Saved "${syn}" to your dictionary` : 'Could not save — see console');
-      if (res.ok) { addInput.value = ''; renderPersonalSection(word); }
+      new Notice(res.ok ? `Saved "${value}" to your dictionary` : 'Could not save — see console');
+      if (res.ok) { addInput.value = ''; renderPersonalSection(); }
     });
+
+    return { search };
   }
 
   // ---- Definitions tab ----
@@ -1532,14 +1569,15 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
       if (found) {
         this.personalDictionary = JSON.parse(found.text);
         if (!this.personalDictionary.synonyms) this.personalDictionary.synonyms = {};
+        if (!this.personalDictionary.antonyms) this.personalDictionary.antonyms = {};
         this.personalDictionaryPath = found.path;
       } else {
-        this.personalDictionary = { synonyms: {} };
+        this.personalDictionary = { synonyms: {}, antonyms: {} };
         this.personalDictionaryPath = 'poets-notebook-dictionary.json';
       }
     } catch (e) {
       console.error("Poet's Notebook: failed to load personal dictionary", e);
-      this.personalDictionary = { synonyms: {} };
+      this.personalDictionary = { synonyms: {}, antonyms: {} };
       this.personalDictionaryPath = 'poets-notebook-dictionary.json';
     }
   }
@@ -1554,26 +1592,42 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
     }
   }
 
-  async addSynonymToPersonalDictionary(word, synonym) {
+  async _addWordRelation(kind, word, related) {
     const key = word.toLowerCase().trim();
-    const value = synonym.toLowerCase().trim();
+    const value = related.toLowerCase().trim();
     if (!key || !value) return { ok: false, reason: 'empty' };
     if (key === value) return { ok: false, reason: 'self' };
-    if (!this.personalDictionary.synonyms) this.personalDictionary.synonyms = {};
-    if (!this.personalDictionary.synonyms[key]) this.personalDictionary.synonyms[key] = [];
-    if (this.personalDictionary.synonyms[key].includes(value)) return { ok: true };
-    this.personalDictionary.synonyms[key].push(value);
+    if (!this.personalDictionary[kind]) this.personalDictionary[kind] = {};
+    if (!this.personalDictionary[kind][key]) this.personalDictionary[kind][key] = [];
+    if (this.personalDictionary[kind][key].includes(value)) return { ok: true };
+    this.personalDictionary[kind][key].push(value);
     const saved = await this.savePersonalDictionary();
     return { ok: saved };
   }
 
-  async removeSynonymFromPersonalDictionary(word, synonym) {
+  async _removeWordRelation(kind, word, related) {
     const key = word.toLowerCase().trim();
-    const value = synonym.toLowerCase().trim();
-    if (!this.personalDictionary.synonyms || !this.personalDictionary.synonyms[key]) return true;
-    this.personalDictionary.synonyms[key] = this.personalDictionary.synonyms[key].filter((s) => s !== value);
-    if (this.personalDictionary.synonyms[key].length === 0) delete this.personalDictionary.synonyms[key];
+    const value = related.toLowerCase().trim();
+    if (!this.personalDictionary[kind] || !this.personalDictionary[kind][key]) return true;
+    this.personalDictionary[kind][key] = this.personalDictionary[kind][key].filter((s) => s !== value);
+    if (this.personalDictionary[kind][key].length === 0) delete this.personalDictionary[kind][key];
     return await this.savePersonalDictionary();
+  }
+
+  async addSynonymToPersonalDictionary(word, synonym) {
+    return this._addWordRelation('synonyms', word, synonym);
+  }
+
+  async removeSynonymFromPersonalDictionary(word, synonym) {
+    return this._removeWordRelation('synonyms', word, synonym);
+  }
+
+  async addAntonymToPersonalDictionary(word, antonym) {
+    return this._addWordRelation('antonyms', word, antonym);
+  }
+
+  async removeAntonymFromPersonalDictionary(word, antonym) {
+    return this._removeWordRelation('antonyms', word, antonym);
   }
 
   async saveSettings() {
