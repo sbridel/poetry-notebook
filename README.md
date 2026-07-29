@@ -1,4 +1,4 @@
-# Poet's Notebook
+# Poetry Notebook
 
 Sibling project to "Carnet du Poète" (French), rebuilt from scratch for English —
 not a multilingual extension of the French plugin.
