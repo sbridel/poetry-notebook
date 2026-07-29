@@ -210,4 +210,5 @@ All 7 tabs are built. What's still genuinely untested or thin:
    
 ## Changelog
 
+- **1.0.1** — minor updates
 - **1.0.0** — Initial release
