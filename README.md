@@ -1,4 +1,4 @@
-# Poet's Notebook
+# Poetry Notebook
 
 An Obsidian plugin for writing and revising English poetry: syllable and meter
 analysis, rhyme search, synonyms and antonyms, definitions, thematic
