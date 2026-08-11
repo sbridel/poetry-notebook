@@ -74,11 +74,40 @@
 }
 
 .pn-checkbox-label {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
+  font-size: 0.85em;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--background-primary-alt);
+  border: 1.5px solid var(--background-modifier-border);
+  border-radius: 14px;
+  padding: 4px 12px;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
+.pn-checkbox-label:has(input:checked) {
+  color: var(--text-normal);
+  border-color: var(--text-accent);
+  background: var(--background-modifier-hover);
+}
+.pn-checkbox-label input { margin: 0; }
+
+/* Boutons d'action secondaires (icône + libellé court) — pour les actions
+   utilitaires (copier, effacer...), pas pour l'action principale d'un
+   panneau (qui reste en mod-cta, plus lisible qu'une icône pour "Search"). */
+.pn-icon-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px; padding: 5px 10px;
+  font-size: 0.85em; cursor: pointer; color: var(--text-normal);
+}
+.pn-icon-btn:hover { background: var(--background-modifier-hover); }
+.pn-icon-btn-label { font-size: 0.95em; }
+.pn-actions-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: nowrap; }
+.pn-actions-row-right { display: flex; gap: 8px; margin-left: auto; flex-wrap: nowrap; }
 
 .pn-results {
   display: flex;
@@ -375,6 +404,33 @@
 }
 
 /* Random tab */
+.pn-random-quickrow { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+
+.pn-random-filters { margin: 6px 0; font-size: 0.85em; }
+.pn-random-filters summary { cursor: pointer; color: var(--text-muted); }
+.pn-tag-pills-row, .pn-tag-mode-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+
+/* Pilule générique réutilisée pour les filtres rapides, les tags et le
+   mode AND/OR — un seul style, cohérent, plutôt que trois variantes. */
+.pn-tag-pill {
+  background: var(--background-primary-alt);
+  border: 1.5px solid var(--background-modifier-border);
+  border-radius: 14px;
+  padding: 4px 12px;
+  font-size: 0.85em;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.pn-tag-pill:hover { border-color: var(--text-muted); }
+.pn-tag-pill-active {
+  color: var(--text-normal);
+  border-color: var(--text-accent);
+  background: var(--background-modifier-hover);
+}
+
+.pn-random-stats { font-size: 0.8em; color: var(--text-faint); margin-bottom: 4px; }
+
 .pn-random-btn {
   display: block;
   margin: 10px auto 20px auto;
@@ -391,13 +447,31 @@
 
 .pn-random-note {
   color: var(--text-normal);
-  margin-bottom: 6px;
+  margin-bottom: 10px;
 }
 
-.pn-random-theme {
-  color: var(--text-muted);
-  font-size: 0.8em;
-  margin-bottom: 12px;
+.pn-random-tags {
+  display: flex; justify-content: center; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 8px;
+}
+.pn-tag-chip {
+  font-size: 0.75em; color: var(--text-muted);
+  background: var(--background-secondary);
+  border-radius: 10px; padding: 2px 8px;
+}
+.pn-tag-chip-theme { color: var(--text-accent); }
+.pn-tag-chip-remove { cursor: pointer; opacity: 0.6; }
+.pn-tag-chip-remove:hover { opacity: 1; }
+
+.pn-random-add-tag {
+  display: flex; justify-content: center; gap: 6px; margin-bottom: 12px;
+}
+.pn-random-add-tag input {
+  font-size: 0.8em; padding: 3px 8px; width: 140px;
+}
+
+.pn-random-status-row {
+  display: flex; justify-content: center; gap: 8px; margin-bottom: 12px;
 }
 
 .pn-random-links {
@@ -406,3 +480,95 @@
   gap: 16px;
   font-size: 0.85em;
 }
+
+/* Sonorities flip card — same mechanism as the French plugin's Sonorités
+   panel: the front face is the normal syllable/rhyme analysis, the back
+   face (revealed by flipping) holds alliteration/consonant web/internal
+   assonance/echo endings. Kept as a genuine 3D flip rather than a plain
+   tab, on purpose — it visually signals "this is a secondary, more
+   advanced layer" without hiding it behind a settings menu. */
+.pn-flip-zone { perspective: 1400px; margin-top: 8px; }
+.pn-flip-card { position: relative; transition: transform 0.6s ease, height 0.3s ease; transform-style: preserve-3d; }
+.pn-flip-zone.pn-flipped .pn-flip-card { transform: rotateY(180deg); }
+.pn-flip-face { backface-visibility: hidden; width: 100%; }
+.pn-flip-back { position: absolute; top: 0; left: 0; transform: rotateY(180deg); }
+
+.pn-icon-btn-cyan { border-color: #3fb0a8; color: #3fb0a8; }
+.pn-icon-btn-cyan:hover { background: rgba(63, 176, 168, 0.15); }
+.pn-experimental-tag {
+  font-size: 0.65em; text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--text-faint); border: 1px solid var(--background-modifier-border);
+  border-radius: 8px; padding: 1px 5px; margin-left: 2px;
+}
+.pn-icon-flip { display: inline-block; animation: pn-icon-flip-anim 0.6s ease; }
+@keyframes pn-icon-flip-anim { 0% { transform: rotateY(0deg); } 100% { transform: rotateY(360deg); } }
+
+.pn-son-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.pn-son-toolbar select, .pn-son-toolbar input[type="number"] { font-size: 0.85em; padding: 3px 6px; }
+.pn-son-toolbar-left { display: flex; align-items: center; gap: 8px; }
+.pn-son-toolbar-right { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.pn-son-seuil-label { font-size: 0.85em; color: var(--text-muted); }
+
+.pn-son-legend { font-size: 0.8em; color: var(--text-muted); margin-bottom: 8px; line-height: 1.6; }
+.pn-son-legend-hint { font-size: 0.78em; color: var(--text-faint); font-style: italic; margin: 0 0 10px 0; line-height: 1.5; }
+.pn-son-legend-group { margin-right: 16px; }
+.pn-son-legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+.pn-son-legend-underline { display: inline-block; width: 14px; height: 2px; margin-right: 4px; vertical-align: middle; }
+
+.pn-son-draft { font-family: var(--font-monospace, monospace); font-size: 0.9em; line-height: 1.9; white-space: pre-wrap; padding: 10px; background: var(--background-secondary); border-radius: 6px; margin-bottom: 10px; }
+.pn-son-line { display: block; }
+.pn-son-linenum { display: inline-block; width: 2em; color: var(--text-faint); font-size: 0.85em; user-select: none; }
+.pn-son-init { border-radius: 3px; padding: 0 1px; color: #fff !important; }
+.pn-son-vox { border-bottom: 2px solid; }
+.pn-son-dim { opacity: 0.3; }
+
+.pn-son-jump-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+
+.pn-son-section h4 { margin: 14px 0 2px 0; }
+.pn-son-subtitle { font-size: 0.8em; color: var(--text-muted); margin: 0 0 8px 0; }
+.pn-son-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--background-modifier-border); }
+.pn-son-row-clickable { cursor: pointer; }
+.pn-son-row-clickable:hover { background: var(--background-modifier-hover); border-radius: 4px; }
+.pn-son-row-active { background: var(--background-modifier-hover); border-radius: 4px; font-weight: 600; }
+.pn-son-badge { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 0.7em; font-weight: 700; flex-shrink: 0; }
+.pn-son-words { flex: 1; font-size: 0.88em; }
+.pn-son-count { font-size: 0.78em; color: var(--text-muted); }
+.pn-son-ratio { font-size: 0.72em; color: var(--text-faint); margin-left: 4px; white-space: nowrap; }
+.pn-son-ratio-high { color: var(--text-accent); font-weight: 600; }
+.pn-son-empty { color: var(--text-faint); font-style: italic; font-size: 0.85em; }
+
+/* 8-colour palette for Sonorities — one more slot than the French plugin
+   (7) since English ARPAbet needs a separate "Glides" family (W/Y) that
+   French doesn't. Background only here — never "color" (text colour) on
+   the same class: .pn-son-init/.pn-son-badge already set white text at
+   equal specificity, so a "color" here would win by declaration order
+   and paint the text the same as its own background, making it
+   invisible. Real bug, caught from a screenshot — not a hypothetical. */
+.pn-son-c1 { background:#6c5ce7; }
+.pn-son-c2 { background:#007b63; }
+.pn-son-c3 { background:#cb4424; }
+.pn-son-c4 { background:#ad5c14; }
+.pn-son-c5 { background:#dd1b79; }
+.pn-son-c6 { background:#0873c6; }
+.pn-son-c7 { background:#1e8449; }
+.pn-son-c8 { background:#8e5a2f; }
+.pn-son-badge.pn-son-c1, .pn-son-init.pn-son-c1 { background:#6c5ce7; color:#fff !important; }
+.pn-son-badge.pn-son-c2, .pn-son-init.pn-son-c2 { background:#007b63; color:#fff !important; }
+.pn-son-badge.pn-son-c3, .pn-son-init.pn-son-c3 { background:#cb4424; color:#fff !important; }
+.pn-son-badge.pn-son-c4, .pn-son-init.pn-son-c4 { background:#ad5c14; color:#fff !important; }
+.pn-son-badge.pn-son-c5, .pn-son-init.pn-son-c5 { background:#dd1b79; color:#fff !important; }
+.pn-son-badge.pn-son-c6, .pn-son-init.pn-son-c6 { background:#0873c6; color:#fff !important; }
+.pn-son-badge.pn-son-c7, .pn-son-init.pn-son-c7 { background:#1e8449; color:#fff !important; }
+.pn-son-badge.pn-son-c8, .pn-son-init.pn-son-c8 { background:#8e5a2f; color:#fff !important; }
+.pn-son-vox.pn-son-c1 { border-color:#6c5ce7; }
+.pn-son-vox.pn-son-c2 { border-color:#007b63; }
+.pn-son-vox.pn-son-c3 { border-color:#cb4424; }
+/* Used only when a word is highlighted for BOTH its initial consonant
+   (background, via pn-son-cN) and its vowel (underline) at once — a
+   distinct suffixed class so the vowel colour only ever touches
+   border-bottom-color, never background, even though the same base hues
+   are reused. Avoids a repeat of the invisible-text bug above, where two
+   colour classes on the same element fought over the same property. */
+.pn-son-c1-underline { border-bottom-color:#6c5ce7 !important; }
+.pn-son-c2-underline { border-bottom-color:#007b63 !important; }
+.pn-son-c3-underline { border-bottom-color:#cb4424 !important; }

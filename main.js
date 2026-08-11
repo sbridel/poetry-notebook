@@ -343,6 +343,332 @@ function detectRhymeScheme(lines, cmudictIndex) {
   return { scheme: scheme.join(''), keys };
 }
 
+// ============================================================
+// SONORITIES — alliteration, consonant web (every position, not just
+// initial), internal assonance, echo endings (mid-line rhyme echoes).
+// Unlike the French plugin's Sonorités module, this reads phonemes
+// straight from CMUdict — no orthographic heuristic is needed for the
+// vast majority of the ~135k covered words (no silent-letter rules, no
+// doubled-consonant collapse, no "-tion softens to [s]" exception list:
+// CMUdict already resolved all of that). A word missing from CMUdict is
+// simply skipped for alliteration/consonant web/assonance (spelling-only
+// English pronunciation is too unreliable to guess at safely); echo
+// endings fall back to the heuristic syllable/rhyme machinery already
+// used elsewhere in this file for out-of-dictionary words.
+// ============================================================
+
+function isVowelPhoneme(ph) { return /\d$/.test(ph); }
+function stripStress(ph) { return ph.replace(/\d$/, ''); }
+
+const STOPS_VOICELESS = new Set(['P', 'T', 'K']);
+const STOPS_VOICED = new Set(['B', 'D', 'G']);
+const FRICATIVES_VOICELESS = new Set(['F', 'TH', 'S', 'SH', 'HH']);
+const FRICATIVES_VOICED = new Set(['V', 'DH', 'Z', 'ZH']);
+const AFFRICATES_VOICELESS = new Set(['CH']);
+const AFFRICATES_VOICED = new Set(['JH']);
+const NASAL_CONSONANTS = new Set(['M', 'N', 'NG']);
+const LIQUID_CONSONANTS = new Set(['L', 'R']);
+const GLIDE_CONSONANTS = new Set(['W', 'Y']);
+
+function consonantFamilySimple(ph) {
+  if (STOPS_VOICELESS.has(ph) || STOPS_VOICED.has(ph)) return 'Stops';
+  if (FRICATIVES_VOICELESS.has(ph) || FRICATIVES_VOICED.has(ph)) return 'Fricatives';
+  if (AFFRICATES_VOICELESS.has(ph) || AFFRICATES_VOICED.has(ph)) return 'Affricates';
+  if (NASAL_CONSONANTS.has(ph)) return 'Nasals';
+  if (LIQUID_CONSONANTS.has(ph)) return 'Liquids';
+  if (GLIDE_CONSONANTS.has(ph)) return 'Glides';
+  return ph;
+}
+function consonantFamilyExtended(ph) {
+  if (STOPS_VOICELESS.has(ph)) return 'Voiceless stops';
+  if (STOPS_VOICED.has(ph)) return 'Voiced stops';
+  if (FRICATIVES_VOICELESS.has(ph)) return 'Voiceless fricatives';
+  if (FRICATIVES_VOICED.has(ph)) return 'Voiced fricatives';
+  if (AFFRICATES_VOICELESS.has(ph)) return 'Voiceless affricate';
+  if (AFFRICATES_VOICED.has(ph)) return 'Voiced affricate';
+  if (NASAL_CONSONANTS.has(ph)) return 'Nasals';
+  if (LIQUID_CONSONANTS.has(ph)) return 'Liquids';
+  if (GLIDE_CONSONANTS.has(ph)) return 'Glides';
+  return ph;
+}
+// Simplified 3-way vowel split (mirrors the French plugin's claires/
+// sombres/ouverte) and a more granular 6-way split by height/diphthong
+// status for "extended" mode.
+const VOWEL_FAMILY_SIMPLE = {
+  IY: 'Front vowels', IH: 'Front vowels', EH: 'Front vowels', AE: 'Front vowels', EY: 'Front vowels',
+  UW: 'Back vowels', UH: 'Back vowels', OW: 'Back vowels', AO: 'Back vowels', AA: 'Back vowels',
+  AH: 'Central/diphthongs', ER: 'Central/diphthongs', AY: 'Central/diphthongs', AW: 'Central/diphthongs', OY: 'Central/diphthongs',
+};
+const VOWEL_FAMILY_EXTENDED = {
+  IY: 'High front', IH: 'High front',
+  EH: 'Mid/low front', AE: 'Mid/low front', EY: 'Mid/low front',
+  UW: 'High back', UH: 'High back',
+  OW: 'Mid/low back', AO: 'Mid/low back', AA: 'Mid/low back',
+  AH: 'Central', ER: 'Central',
+  AY: 'Diphthongs', AW: 'Diphthongs', OY: 'Diphthongs',
+};
+
+function initialConsonantOfEntry(entry) {
+  for (const ph of entry.phonemes) {
+    if (isVowelPhoneme(ph)) return null; // word starts with a vowel sound: no alliteration possible
+    return stripStress(ph);
+  }
+  return null;
+}
+
+function allConsonantsOfEntry(entry) {
+  return entry.phonemes
+    .map((ph, i) => ({ ph: stripStress(ph), i, vowel: isVowelPhoneme(ph) }))
+    .filter((x) => !x.vowel);
+}
+
+function allVowelsOfEntry(entry) {
+  return entry.phonemes
+    .map((ph, i) => ({ ph: stripStress(ph), i }))
+    .filter((_, idx) => isVowelPhoneme(entry.phonemes[idx]));
+}
+
+const STOPWORDS_EN = new Set([
+  'the', 'a', 'an', 'of', 'to', 'and', 'in', 'on', 'at', 'for', 'with', 'is', 'are', 'was',
+  'were', 'be', 'been', 'being', 'it', 'its', 'that', 'this', 'these', 'those', 'as', 'by',
+  'or', 'but', 'so', 'if', 'not', 'no', 'do', 'does', 'did', 'has', 'have', 'had', 'i', 'you',
+  'he', 'she', 'we', 'they', 'my', 'your', 'his', 'her', 'our', 'their', 'from', 'into', 'up',
+]);
+
+// Builds a phoneme-frequency baseline directly from the loaded CMUdict —
+// unlike the French plugin (stuck citing a 1985 study for lack of a
+// better accessible source), this recomputes on the ~135k words actually
+// loaded, so it's always current and needs no citation. Two tables, same
+// reasoning as the French plugin's ATTAQUE/TOUTES split: word-initial
+// position behaves very differently from "anywhere in the word" for some
+// phonemes, so alliteration and the consonant web need separate baselines.
+function buildPhonemeFrequencyBaseline(cmudictIndex) {
+  if (!cmudictIndex) return { initial: {}, all: {}, vowelsAll: {} };
+  const initialCounts = {};
+  const allCounts = {};
+  const vowelCounts = {};
+  let totalInitial = 0, totalAll = 0, totalVowels = 0;
+  for (const [, entries] of cmudictIndex) {
+    const entry = entries[0];
+    const cons = allConsonantsOfEntry(entry);
+    const vows = allVowelsOfEntry(entry);
+    if (cons.length > 0 && !isVowelPhoneme(entry.phonemes[0])) {
+      const ph = cons[0].ph;
+      initialCounts[ph] = (initialCounts[ph] || 0) + 1;
+      totalInitial++;
+    }
+    cons.forEach((c) => { allCounts[c.ph] = (allCounts[c.ph] || 0) + 1; totalAll++; });
+    vows.forEach((v) => { vowelCounts[v.ph] = (vowelCounts[v.ph] || 0) + 1; totalVowels++; });
+  }
+  const toPercent = (counts, total) => {
+    const out = {};
+    for (const k in counts) out[k] = (counts[k] / total) * 100;
+    return out;
+  };
+  return {
+    initial: toPercent(initialCounts, totalInitial),
+    all: toPercent(allCounts, totalAll),
+    vowelsAll: toPercent(vowelCounts, totalVowels),
+  };
+}
+
+// Baseline for a family-grouped table: sums the member phonemes' real
+// baseline percentages, computed from the same per-phoneme table (no
+// double counting, since each phoneme belongs to exactly one family).
+function familyBaseline(perPhonemeBaseline, familyMapObjectOrFn) {
+  const out = {};
+  for (const ph in perPhonemeBaseline) {
+    const fam = typeof familyMapObjectOrFn === 'function'
+      ? familyMapObjectOrFn(ph)
+      : familyMapObjectOrFn[ph];
+    if (!fam) continue;
+    out[fam] = (out[fam] || 0) + perPhonemeBaseline[ph];
+  }
+  return out;
+}
+
+function ratioFrequency(baselineTable, son, observedPercent) {
+  const base = baselineTable[son];
+  if (!base) return null;
+  return observedPercent / base;
+}
+
+// mode: 'exact' | 'simple' | 'extended'
+function familyKeyForConsonant(ph, mode) {
+  if (mode === 'simple') return consonantFamilySimple(ph);
+  if (mode === 'extended') return consonantFamilyExtended(ph);
+  return ph;
+}
+function familyKeyForVowel(ph, mode) {
+  if (mode === 'simple') return VOWEL_FAMILY_SIMPLE[ph] || ph;
+  if (mode === 'extended') return VOWEL_FAMILY_EXTENDED[ph] || ph;
+  return ph;
+}
+
+function analyzeAlliteration(lines, cmudictIndex, baseline, opts) {
+  const excludeStop = !opts || opts.excludeStopwords !== false;
+  const seuil = (opts && opts.seuilMin) || 2;
+  const mode = (opts && opts.mode) || 'exact';
+  const bySon = new Map();
+  lines.forEach((line, idxLine) => {
+    tokenizeLine(line).forEach((wordRaw) => {
+      const wl = wordRaw.toLowerCase().replace(/'/g, '');
+      if (!wl || (excludeStop && STOPWORDS_EN.has(wl))) return;
+      const entry = resolveCmudictEntry(wordRaw, cmudictIndex);
+      if (!entry) return;
+      const ph = initialConsonantOfEntry(entry);
+      if (!ph) return;
+      const key = familyKeyForConsonant(ph, mode);
+      if (!bySon.has(key)) bySon.set(key, []);
+      bySon.get(key).push({ word: wl, line: idxLine + 1 });
+    });
+  });
+  const baseTable = mode === 'exact' ? baseline.initial
+    : familyBaseline(baseline.initial, mode === 'simple' ? consonantFamilySimple : consonantFamilyExtended);
+  const total = Array.from(bySon.values()).reduce((n, l) => n + l.length, 0);
+  return Array.from(bySon.entries())
+    .map(([son, occurrences]) => ({
+      son, occurrences, count: occurrences.length,
+      ratio: total > 0 ? ratioFrequency(baseTable, son, (occurrences.length / total) * 100) : null,
+    }))
+    .filter((e) => e.count >= seuil)
+    .sort((a, b) => b.count - a.count);
+}
+
+function analyzeConsonantWeb(lines, cmudictIndex, baseline, opts) {
+  const excludeStop = !opts || opts.excludeStopwords !== false;
+  const seuil = (opts && opts.seuilMin) || 2;
+  const mode = (opts && opts.mode) || 'exact';
+  const bySon = new Map();
+  lines.forEach((line, idxLine) => {
+    tokenizeLine(line).forEach((wordRaw) => {
+      const wl = wordRaw.toLowerCase().replace(/'/g, '');
+      if (!wl || (excludeStop && STOPWORDS_EN.has(wl))) return;
+      const entry = resolveCmudictEntry(wordRaw, cmudictIndex);
+      if (!entry) return;
+      const seen = new Set(); // count a word once per son, even if repeated inside it
+      allConsonantsOfEntry(entry).forEach((c) => {
+        const key = familyKeyForConsonant(c.ph, mode);
+        if (seen.has(key)) return;
+        seen.add(key);
+        if (!bySon.has(key)) bySon.set(key, []);
+        bySon.get(key).push({ word: wl, line: idxLine + 1 });
+      });
+    });
+  });
+  const baseTable = mode === 'exact' ? baseline.all
+    : familyBaseline(baseline.all, mode === 'simple' ? consonantFamilySimple : consonantFamilyExtended);
+  const total = Array.from(bySon.values()).reduce((n, l) => n + l.length, 0);
+  return Array.from(bySon.entries())
+    .map(([son, occurrences]) => ({
+      son, occurrences, count: occurrences.length,
+      ratio: total > 0 ? ratioFrequency(baseTable, son, (occurrences.length / total) * 100) : null,
+    }))
+    .filter((e) => e.count >= seuil)
+    .sort((a, b) => b.count - a.count);
+}
+
+function analyzeInternalAssonance(lines, cmudictIndex, baseline, opts) {
+  const excludeStop = !opts || opts.excludeStopwords !== false;
+  const seuil = (opts && opts.seuilMin) || 2;
+  const mode = (opts && opts.mode) || 'exact';
+  const bySon = new Map();
+  lines.forEach((line, idxLine) => {
+    tokenizeLine(line).forEach((wordRaw) => {
+      const wl = wordRaw.toLowerCase().replace(/'/g, '');
+      if (!wl || (excludeStop && STOPWORDS_EN.has(wl))) return;
+      const entry = resolveCmudictEntry(wordRaw, cmudictIndex);
+      if (!entry) return;
+      const seen = new Set();
+      allVowelsOfEntry(entry).forEach((v) => {
+        const key = familyKeyForVowel(v.ph, mode);
+        if (seen.has(key)) return;
+        seen.add(key);
+        if (!bySon.has(key)) bySon.set(key, []);
+        bySon.get(key).push({ word: wl, line: idxLine + 1 });
+      });
+    });
+  });
+  const baseTable = mode === 'exact' ? baseline.vowelsAll
+    : familyBaseline(baseline.vowelsAll, mode === 'simple' ? (ph => VOWEL_FAMILY_SIMPLE[ph]) : (ph => VOWEL_FAMILY_EXTENDED[ph]));
+  const total = Array.from(bySon.values()).reduce((n, l) => n + l.length, 0);
+  return Array.from(bySon.entries())
+    .map(([son, occurrences]) => ({
+      son, occurrences, count: occurrences.length,
+      ratio: total > 0 ? ratioFrequency(baseTable, son, (occurrences.length / total) * 100) : null,
+    }))
+    .filter((e) => e.count >= seuil)
+    .sort((a, b) => b.count - a.count);
+}
+
+// Echo endings: the rhyming part (rhymeKeyForWord, already used for the
+// rhyme scheme) applied to EVERY word in the poem, not just line-final
+// ones — surfaces mid-line echoes of a sound that also happens to be a
+// line-end rhyme elsewhere, or a completely separate recurring echo.
+// Same guard as the French plugin's homéotéleutes: needs at least 2
+// distinct words AND at least one occurrence that isn't already the last
+// word of its line, otherwise it's just restating the rhyme scheme.
+function analyzeEchoEndings(lines, cmudictIndex, excludeStopwords) {
+  const excludeStop = excludeStopwords !== false;
+  const byKey = new Map();
+  lines.forEach((line, idxLine) => {
+    const words = tokenizeLine(line);
+    words.forEach((wordRaw, idxWord) => {
+      const wl = wordRaw.toLowerCase().replace(/'/g, '');
+      if (!wl || (excludeStop && STOPWORDS_EN.has(wl))) return;
+      const key = rhymeKeyForWord(wordRaw, cmudictIndex);
+      if (!key) return;
+      const isLineFinal = idxWord === words.length - 1;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push({ word: wl, line: idxLine + 1, lineFinal: isLineFinal });
+    });
+  });
+  return Array.from(byKey.entries())
+    .map(([key, occurrences]) => ({ key, occurrences, count: occurrences.length }))
+    .filter((e) => {
+      const distinctWords = new Set(e.occurrences.map((o) => o.word)).size;
+      const hasMidLine = e.occurrences.some((o) => !o.lineFinal);
+      return distinctWords >= 2 && hasMidLine;
+    })
+    .sort((a, b) => b.count - a.count);
+}
+
+function analyzeSonorities(poemText, cmudictIndex, baseline, opts) {
+  const lines = (poemText || '').split('\n');
+  return {
+    alliteration: analyzeAlliteration(lines, cmudictIndex, baseline, opts),
+    consonantWeb: analyzeConsonantWeb(lines, cmudictIndex, baseline, opts),
+    internalAssonance: analyzeInternalAssonance(lines, cmudictIndex, baseline, opts),
+    echoEndings: analyzeEchoEndings(lines, cmudictIndex, opts && opts.excludeStopwords),
+  };
+}
+
+// Stable colour per theme, not per order of appearance — "Stops" (simple
+// mode) and "Voiceless stops" (extended mode) must land on the same hue
+// family, since it's the same underlying group of sounds viewed at two
+// granularities. Mirrors the French plugin's THEME_CONSONNE/THEME_VOYELLE
+// exactly (including the fix applied there: colour keyed by theme, never
+// by discovery order).
+const THEME_CONSONANT = {
+  P: 'pn-son-c1', T: 'pn-son-c1', K: 'pn-son-c1', Stops: 'pn-son-c1', 'Voiceless stops': 'pn-son-c1',
+  B: 'pn-son-c2', D: 'pn-son-c2', G: 'pn-son-c2', 'Voiced stops': 'pn-son-c2',
+  F: 'pn-son-c3', TH: 'pn-son-c3', S: 'pn-son-c3', SH: 'pn-son-c3', HH: 'pn-son-c3',
+  Fricatives: 'pn-son-c3', 'Voiceless fricatives': 'pn-son-c3',
+  V: 'pn-son-c4', DH: 'pn-son-c4', Z: 'pn-son-c4', ZH: 'pn-son-c4', 'Voiced fricatives': 'pn-son-c4',
+  CH: 'pn-son-c5', JH: 'pn-son-c5', Affricates: 'pn-son-c5', 'Voiceless affricate': 'pn-son-c5', 'Voiced affricate': 'pn-son-c5',
+  M: 'pn-son-c6', N: 'pn-son-c6', NG: 'pn-son-c6', Nasals: 'pn-son-c6',
+  L: 'pn-son-c7', R: 'pn-son-c7', Liquids: 'pn-son-c7',
+  W: 'pn-son-c8', Y: 'pn-son-c8', Glides: 'pn-son-c8',
+};
+const THEME_VOWEL = {
+  IY: 'pn-son-c1', IH: 'pn-son-c1', EH: 'pn-son-c1', AE: 'pn-son-c1', EY: 'pn-son-c1',
+  'Front vowels': 'pn-son-c1', 'High front': 'pn-son-c1', 'Mid/low front': 'pn-son-c1',
+  UW: 'pn-son-c2', UH: 'pn-son-c2', OW: 'pn-son-c2', AO: 'pn-son-c2', AA: 'pn-son-c2',
+  'Back vowels': 'pn-son-c2', 'High back': 'pn-son-c2', 'Mid/low back': 'pn-son-c2',
+  AH: 'pn-son-c3', ER: 'pn-son-c3', AY: 'pn-son-c3', AW: 'pn-son-c3', OY: 'pn-son-c3',
+  'Central/diphthongs': 'pn-son-c3', Central: 'pn-son-c3', Diphthongs: 'pn-son-c3',
+};
+
 // Datamuse online rhymes, only ever called on explicit user action (a
 // checkbox the person ticks before searching), never automatically.
 async function fetchDatamuseRhymes(word, near) {
@@ -712,6 +1038,67 @@ function allRareWords(personalDictionary) {
   return fromThemes.concat(personalThemeWords, personalRareWords);
 }
 
+// ----------------------------------------------------------------
+// Random tab — tags, like, exclude. Mirrors the French plugin's Hasard
+// tab feature-for-feature: every word (built-in or personal) can carry
+// custom tags on top of its theme, be marked "liked" (surfaced more
+// readily when browsing) or "excluded" (removed from the draw pool
+// unless explicitly exploring exclusions). All of this is per-word
+// metadata stored in the personal dictionary under "wordMeta" — it
+// applies to built-in words too, not just ones the person added, since
+// tagging/excluding a built-in word never means editing its definition.
+// ----------------------------------------------------------------
+
+function normalizeWordKey(w) {
+  return (w || '').toLowerCase().trim();
+}
+
+function getWordMeta(personalDictionary, word) {
+  const meta = (personalDictionary && personalDictionary.wordMeta) || {};
+  const entry = meta[normalizeWordKey(word)];
+  return {
+    tags: (entry && entry.tags) || [],
+    liked: !!(entry && entry.liked),
+    excluded: !!(entry && entry.excluded),
+  };
+}
+
+// Every pool entry, enriched with its theme (always a tag) plus any
+// custom tags/liked/excluded state from the personal dictionary.
+function poolWithMeta(personalDictionary) {
+  return allRareWords(personalDictionary).map((w) => {
+    const meta = getWordMeta(personalDictionary, w.word);
+    const themeTag = w.theme || 'Untagged';
+    const tags = Array.from(new Set([themeTag, ...meta.tags]));
+    return { ...w, tags, liked: meta.liked, excluded: meta.excluded };
+  });
+}
+
+function allTagsFromPool(pool) {
+  const tags = new Set();
+  pool.forEach((w) => w.tags.forEach((t) => tags.add(t)));
+  return Array.from(tags).sort((a, b) => a.localeCompare(b));
+}
+
+// filters: { includeTags: Set, includeMode: 'and'|'or', excludeTags: Set,
+//            onlyLiked: bool, onlyExcluded: bool (review mode) }
+function filterPool(pool, filters) {
+  return pool.filter((w) => {
+    if (filters.onlyExcluded) return w.excluded;
+    if (w.excluded) return false; // hidden by default unless reviewing exclusions
+    if (filters.onlyLiked && !w.liked) return false;
+    if (filters.excludeTags.size > 0 && w.tags.some((t) => filters.excludeTags.has(t))) return false;
+    if (filters.includeTags.size > 0) {
+      const matches = filters.includeTags.size &&
+        (filters.includeMode === 'and'
+          ? Array.from(filters.includeTags).every((t) => w.tags.includes(t))
+          : Array.from(filters.includeTags).some((t) => w.tags.includes(t)));
+      if (!matches) return false;
+    }
+    return true;
+  });
+}
+
 // Datamuse "means like" — a loose online complement to the built-in themes,
 // opt-in only, never queried automatically.
 async function fetchDatamuseMeansLike(word) {
@@ -800,32 +1187,60 @@ class PoetsNotebookView extends ItemView {
 
   renderSyllablesTab(body) {
     const wrap = body.createDiv({ cls: 'pn-syllables-tab' });
+
+    const btnRow = wrap.createDiv({ cls: 'pn-actions-row' });
+    const flipBtn = btnRow.createEl('button', { cls: 'pn-icon-btn pn-icon-btn-cyan' });
+    const flipIcon = flipBtn.createSpan({ text: '🔄' });
+    const flipLabel = flipBtn.createSpan({ cls: 'pn-icon-btn-label', text: 'Sonorities' });
+    flipBtn.createSpan({ cls: 'pn-experimental-tag', text: 'experimental' });
+    flipBtn.setAttr('title', 'Flip to see sound patterns (alliteration, consonant web, internal assonance, echo endings). Experimental: newer and less battle-tested than the rest of this plugin — feedback welcome.');
+    const rightActions = btnRow.createDiv({ cls: 'pn-actions-row-right' });
+    const copyBtn = rightActions.createEl('button', { cls: 'pn-icon-btn' });
+    copyBtn.createSpan({ text: '📋' });
+    copyBtn.createSpan({ cls: 'pn-icon-btn-label', text: 'Copy draft' });
+    const clearBtn = rightActions.createEl('button', { cls: 'pn-icon-btn' });
+    clearBtn.createSpan({ text: '🗑️' });
+    clearBtn.createSpan({ cls: 'pn-icon-btn-label', text: 'Clear draft' });
+
     const textarea = wrap.createEl('textarea', {
       cls: 'pn-textarea',
       attr: { placeholder: 'Paste your poem here, one verse per line…', rows: '8' },
     });
     if (this.plugin.draftText) textarea.value = this.plugin.draftText;
 
-    const optionsRow = wrap.createDiv({ cls: 'pn-options-row' });
+    const flipZone = wrap.createDiv({ cls: 'pn-flip-zone' });
+    const flipCard = flipZone.createDiv({ cls: 'pn-flip-card' });
+    const flipFront = flipCard.createDiv({ cls: 'pn-flip-face' });
+    const flipBack = flipCard.createDiv({ cls: 'pn-flip-face pn-flip-back' });
+
+    // "Rhyme colors" only makes sense on the Structure face (it colours
+    // the rhyme-scheme badges below) — lives inside flipFront so it's
+    // never shown while looking at Sonorities on the back face.
+    const optionsRow = flipFront.createDiv({ cls: 'pn-options-row' });
     const colorLabel = optionsRow.createEl('label', { cls: 'pn-checkbox-label' });
     const colorCheckbox = colorLabel.createEl('input', { attr: { type: 'checkbox' } });
     colorCheckbox.checked = this.plugin.settings.showRhymeColors !== false;
     colorLabel.appendText(' Rhyme colors');
 
-    const btnRow = wrap.createDiv({ cls: 'pn-btn-row' });
-    const copyBtn = btnRow.createEl('button', { text: 'Copy draft' });
-    const clearBtn = btnRow.createEl('button', { text: 'Clear draft' });
+    const results = flipFront.createDiv({ cls: 'pn-results' });
+    const summary = flipFront.createDiv({ cls: 'pn-summary' });
 
-    const results = wrap.createDiv({ cls: 'pn-results' });
-    const summary = wrap.createDiv({ cls: 'pn-summary' });
+    const syncFlipHeight = () => {
+      const activeFace = flipZone.hasClass('pn-flipped') ? flipBack : flipFront;
+      requestAnimationFrame(() => { flipCard.style.height = activeFace.scrollHeight + 'px'; });
+    };
 
     let debounceTimer = null;
     const scheduleAnalysis = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         this.runAnalysis(textarea.value, results, summary, colorCheckbox.checked);
+        syncFlipHeight();
+        if (flipZone.hasClass('pn-flipped')) renderSonoritiesBack();
       }, 250);
     };
+
+    let renderSonoritiesBack = () => {}; // reassigned below, once dependencies are in scope
 
     textarea.addEventListener('input', () => {
       this.plugin.draftText = textarea.value;
@@ -837,6 +1252,19 @@ class PoetsNotebookView extends ItemView {
       this.plugin.settings.showRhymeColors = colorCheckbox.checked;
       await this.plugin.saveSettings();
       scheduleAnalysis();
+    });
+
+    flipBtn.addEventListener('click', () => {
+      flipZone.toggleClass('pn-flipped', !flipZone.hasClass('pn-flipped'));
+      const onBack = flipZone.hasClass('pn-flipped');
+      if (onBack) renderSonoritiesBack();
+      syncFlipHeight();
+      flipLabel.setText(onBack ? 'Structure' : 'Sonorities');
+      flipBtn.setAttr('title', onBack
+        ? 'Flip back to syllables, stress and rhyme scheme'
+        : 'Flip to see sound patterns (alliteration, consonant web, internal assonance, echo endings)');
+      flipIcon.addClass('pn-icon-flip');
+      setTimeout(() => flipIcon.removeClass('pn-icon-flip'), 600);
     });
 
     copyBtn.addEventListener('click', async () => {
@@ -854,10 +1282,205 @@ class PoetsNotebookView extends ItemView {
       await this.plugin.saveSettings();
       results.empty();
       summary.empty();
+      if (flipZone.hasClass('pn-flipped')) renderSonoritiesBack();
+      syncFlipHeight();
     });
+
+    renderSonoritiesBack = this.buildSonoritiesRenderer(flipBack, textarea, syncFlipHeight);
 
     // Live analysis on open if a draft already exists
     if (textarea.value.trim().length > 0) scheduleAnalysis();
+  }
+
+  // Builds the back-face renderer for the Sonorities flip card. Returns a
+  // function to call whenever the poem text or settings change and the
+  // back face is (or becomes) visible — kept separate from the front-face
+  // analysis loop so the two don't re-render each other unnecessarily.
+  buildSonoritiesRenderer(flipBack, textarea, syncFlipHeight) {
+    const toolbar = flipBack.createDiv({ cls: 'pn-son-toolbar' });
+    flipBack.createEl('p', {
+      cls: 'pn-son-legend-hint',
+      text: 'Experimental: this panel is newer and less tested than the rest of Poetry Notebook. Sound detection relies entirely on CMUdict — words missing from it are skipped rather than guessed at.',
+    });
+    const leftGroup = toolbar.createDiv({ cls: 'pn-son-toolbar-left' });
+    const modeSelect = leftGroup.createEl('select');
+    [['exact', 'Exact sounds'], ['simple', 'Simplified families'], ['extended', 'Extended families']]
+      .forEach(([v, label]) => modeSelect.createEl('option', { attr: { value: v }, text: label }));
+    modeSelect.value = 'simple';
+    leftGroup.createSpan({ cls: 'pn-son-seuil-label', text: 'Threshold' });
+    const seuilInput = leftGroup.createEl('input', { attr: { type: 'number', min: '2', value: '3', style: 'width:48px' } });
+
+    const rightGroup = toolbar.createDiv({ cls: 'pn-son-toolbar-right' });
+    const stopwordsLabel = rightGroup.createEl('label', { cls: 'pn-checkbox-label' });
+    const stopwordsCheckbox = stopwordsLabel.createEl('input', { attr: { type: 'checkbox' } });
+    stopwordsCheckbox.checked = true;
+    stopwordsLabel.appendText(' Exclude stopwords');
+    const top3Label = rightGroup.createEl('label', { cls: 'pn-checkbox-label' });
+    const top3Checkbox = top3Label.createEl('input', { attr: { type: 'checkbox' } });
+    top3Checkbox.checked = true;
+    top3Label.appendText(' Highlight only the 3 most frequent');
+
+    const legend = flipBack.createDiv({ cls: 'pn-son-legend' });
+    flipBack.createEl('p', {
+      cls: 'pn-son-legend-hint',
+      text: 'Filled background = starts with this consonant. Underline = contains this vowel. A vowel-initial word (I, am, away, understand…) has no consonant to fill, so it can only ever be underlined — that\u2019s expected, not a bug.',
+    });
+    const draftDiv = flipBack.createDiv({ cls: 'pn-son-draft' });
+    const jumpRow = flipBack.createDiv({ cls: 'pn-son-jump-row' });
+    ['Alliteration', 'Consonant web', 'Internal assonance', 'Echo endings'].forEach((label) => {
+      const pill = jumpRow.createEl('button', { cls: 'pn-tag-pill', text: label });
+      pill.addEventListener('click', () => {
+        const target = flipBack.querySelector(`[data-son-section="${label}"]`);
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+    const listDiv = flipBack.createDiv({ cls: 'pn-son-list' });
+
+    let spotlightSon = null; // active in Consonant Web mode: click a son to isolate it in the draft
+
+    const familyFn = (mode, isVowel) => {
+      if (mode === 'exact') return null;
+      return isVowel
+        ? (mode === 'simple' ? (ph => VOWEL_FAMILY_SIMPLE[ph]) : (ph => VOWEL_FAMILY_EXTENDED[ph]))
+        : (mode === 'simple' ? consonantFamilySimple : consonantFamilyExtended);
+    };
+
+    const colourFor = (son, isVowel) => (isVowel ? THEME_VOWEL[son] : THEME_CONSONANT[son]) || 'pn-son-c1';
+
+    const render = () => {
+      if (!this.plugin.cmudictIndex) {
+        flipBack.empty();
+        flipBack.createDiv({ cls: 'pn-son-empty', text: 'CMUdict is required for Sonorities — see the banner above.' });
+        return;
+      }
+      const mode = modeSelect.value;
+      const seuilMin = parseInt(seuilInput.value, 10) || 3;
+      const excludeStopwords = stopwordsCheckbox.checked;
+      const poemText = textarea.value;
+      const result = analyzeSonorities(poemText, this.plugin.cmudictIndex, this.plugin.sonorityBaseline, { excludeStopwords, seuilMin, mode });
+
+      // ---- legend ----
+      legend.empty();
+      const consFams = mode === 'exact'
+        ? Array.from(new Set(result.alliteration.map((e) => e.son)))
+        : Array.from(new Set(result.alliteration.map((e) => e.son)));
+      const g1 = legend.createSpan({ cls: 'pn-son-legend-group' });
+      g1.createSpan({ text: 'Alliteration: ' });
+      consFams.forEach((f) => {
+        g1.createSpan({ cls: 'pn-son-legend-dot ' + colourFor(f, false) });
+        g1.createSpan({ text: f + '  ' });
+      });
+      const vowFams = Array.from(new Set(result.internalAssonance.map((e) => e.son)));
+      const g2 = legend.createSpan({ cls: 'pn-son-legend-group' });
+      g2.createSpan({ text: 'Assonance: ' });
+      vowFams.forEach((f) => {
+        g2.createSpan({ cls: 'pn-son-legend-underline ' + colourFor(f, true) });
+        g2.createSpan({ text: f + '  ' });
+      });
+
+      // ---- draft with highlighting ----
+      draftDiv.empty();
+      const dominantAllit = top3Checkbox.checked ? new Set(result.alliteration.slice(0, 3).map((e) => e.son)) : null;
+      const dominantAsson = top3Checkbox.checked ? new Set(result.internalAssonance.slice(0, 3).map((e) => e.son)) : null;
+
+      const famAllitFn = familyFn(mode, false);
+      const famAssonFn = familyFn(mode, true);
+
+      poemText.split('\n').forEach((line, idxLine) => {
+        const lineEl = draftDiv.createDiv({ cls: 'pn-son-line' });
+        lineEl.createSpan({ cls: 'pn-son-linenum', text: String(idxLine + 1) });
+        if (!line.trim()) { lineEl.createEl('br'); return; }
+        const fragments = line.split(/(\s+)/);
+        fragments.forEach((frag) => {
+          if (!frag.trim()) { lineEl.createSpan({ text: frag }); return; }
+          const wordRaw = frag.replace(/[^A-Za-z']/g, '');
+          if (!wordRaw) { lineEl.createSpan({ text: frag }); return; }
+          const wl = wordRaw.toLowerCase().replace(/'/g, '');
+          const entry = resolveCmudictEntry(wordRaw, this.plugin.cmudictIndex);
+          const isStop = excludeStopwords && STOPWORDS_EN.has(wl);
+
+          if (spotlightSon) {
+            if (!entry || isStop) { lineEl.createSpan({ cls: 'pn-son-dim', text: frag }); return; }
+            const cons = allConsonantsOfEntry(entry);
+            const matches = cons.filter((c) => (famAllitFn ? famAllitFn(c.ph) : c.ph) === spotlightSon);
+            if (matches.length === 0) { lineEl.createSpan({ cls: 'pn-son-dim', text: frag }); return; }
+            // Best-effort position: highlight the whole word (ARPAbet
+            // phoneme index doesn't map cleanly back to letter offsets
+            // the way orthographic scanning does in the French plugin).
+            lineEl.createSpan({ cls: 'pn-son-init ' + colourFor(spotlightSon, false), text: frag });
+            return;
+          }
+
+          if (!entry || isStop) { lineEl.createSpan({ text: frag }); return; }
+
+          const initPh = initialConsonantOfEntry(entry);
+          const initKey = initPh ? (famAllitFn ? famAllitFn(initPh) : initPh) : null;
+          const showInit = initKey && (!dominantAllit || dominantAllit.has(initKey));
+
+          const vows = allVowelsOfEntry(entry);
+          const firstVowKey = vows.length ? (famAssonFn ? famAssonFn(vows[0].ph) : vows[0].ph) : null;
+          const showVox = firstVowKey && (!dominantAsson || dominantAsson.has(firstVowKey));
+
+          if (showInit && showVox) {
+            const span = lineEl.createSpan({ cls: 'pn-son-init pn-son-vox ' + colourFor(initKey, false), text: frag });
+            span.addClass(colourFor(firstVowKey, true) + '-underline');
+          } else if (showInit) {
+            lineEl.createSpan({ cls: 'pn-son-init ' + colourFor(initKey, false), text: frag });
+          } else if (showVox) {
+            lineEl.createSpan({ cls: 'pn-son-vox ' + colourFor(firstVowKey, true), text: frag });
+          } else {
+            lineEl.createSpan({ text: frag });
+          }
+        });
+      });
+
+      // ---- lists ----
+      listDiv.empty();
+      const renderSection = (label, subtitle, list, isVowel, clickable) => {
+        const h4 = listDiv.createEl('h4', { text: label });
+        h4.setAttr('data-son-section', label);
+        listDiv.createEl('p', { cls: 'pn-son-subtitle', text: subtitle });
+        if (list.length === 0) {
+          listDiv.createDiv({ cls: 'pn-son-empty', text: 'Nothing above the current threshold.' });
+          return;
+        }
+        list.forEach((entry) => {
+          const row = listDiv.createDiv({ cls: 'pn-son-row' + (clickable ? ' pn-son-row-clickable' : '') });
+          if (clickable && entry.son === spotlightSon) row.addClass('pn-son-row-active');
+          const badge = row.createSpan({ cls: 'pn-son-badge ' + colourFor(entry.son, isVowel), text: entry.son.slice(0, 3) });
+          const words = Array.from(new Set(entry.occurrences.map((o) => o.word)));
+          const lines = Array.from(new Set(entry.occurrences.map((o) => o.line)));
+          row.createSpan({ cls: 'pn-son-words', text: `${words.join(', ')} — line${lines.length > 1 ? 's' : ''} ${lines.join(', ')}` });
+          row.createSpan({ cls: 'pn-son-count', text: `${entry.count} words` });
+          if (entry.ratio != null) {
+            const ratioSpan = row.createSpan({ cls: 'pn-son-ratio' + (entry.ratio >= 1.5 ? ' pn-son-ratio-high' : '') });
+            ratioSpan.setText('×' + entry.ratio.toFixed(1));
+            ratioSpan.setAttr('title', `This sound occurs ${entry.ratio.toFixed(1)}× more often in this poem than in English on average (baseline computed live from the ${this.plugin.cmudictIndex.size}-word CMUdict index loaded in this vault).`);
+          }
+          if (clickable) {
+            row.addEventListener('click', () => {
+              spotlightSon = spotlightSon === entry.son ? null : entry.son;
+              render();
+              syncFlipHeight();
+              if (spotlightSon) requestAnimationFrame(() => draftDiv.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+            });
+          }
+        });
+      };
+      renderSection('Alliteration', 'Consonant sound repeated at the start of nearby words', result.alliteration, false, false);
+      renderSection('Consonant web', 'A consonant sound that recurs anywhere in a word — attack, middle, or coda — not just at the start. Click a sound to isolate it in the draft above.', result.consonantWeb, false, true);
+      renderSection('Internal assonance', 'A vowel sound that recurs inside nearby words, aside from end-of-line rhyme', result.internalAssonance, true, false);
+      renderSection('Echo endings', 'Word endings that echo each other mid-line, not just the established end-of-line rhyme — needs at least one occurrence away from the line end, otherwise it would just restate the rhyme scheme.', result.echoEndings.map((e) => ({ ...e, son: e.key })), false, false);
+
+      syncFlipHeight();
+    };
+
+    modeSelect.addEventListener('change', render);
+    seuilInput.addEventListener('change', render);
+    stopwordsCheckbox.addEventListener('change', render);
+    top3Checkbox.addEventListener('change', () => { render(); });
+
+    return render;
   }
 
   meterAbbrev(meter) {
@@ -1411,18 +2034,117 @@ class PoetsNotebookView extends ItemView {
   // ---- Random tab ----
   renderRandomTab(body) {
     const wrap = body.createDiv({ cls: 'pn-random-tab' });
+
+    // Filter state, kept in closure across re-renders of this tab instance.
+    const state = {
+      includeTags: new Set(),
+      excludeTags: new Set(),
+      includeMode: 'or', // 'or' | 'and' — only matters with 2+ include tags
+      onlyLiked: false,
+      onlyExcluded: false, // review mode: browse only excluded words
+    };
+    let lastPick = null; // re-rendered in place when its tags/like/excluded change
+
+    const quickRow = wrap.createDiv({ cls: 'pn-random-quickrow' });
+    const likedPill = quickRow.createEl('button', { cls: 'pn-tag-pill', text: '♥ Liked only' });
+    const reviewPill = quickRow.createEl('button', { cls: 'pn-tag-pill', text: '🚫 Review excluded' });
+
+    const includeDetails = wrap.createEl('details', { cls: 'pn-random-filters' });
+    includeDetails.createEl('summary', { text: 'Filter by tag' });
+    const includeModeRow = includeDetails.createDiv({ cls: 'pn-tag-mode-row' });
+    const includeModeBtn = includeModeRow.createEl('button', { cls: 'pn-tag-pill', text: 'Match: any (OR)' });
+    const includePillsRow = includeDetails.createDiv({ cls: 'pn-tag-pills-row' });
+
+    const excludeDetails = wrap.createEl('details', { cls: 'pn-random-filters' });
+    excludeDetails.createEl('summary', { text: 'Exclude tags' });
+    const excludePillsRow = excludeDetails.createDiv({ cls: 'pn-tag-pills-row' });
+
+    const statsLine = wrap.createDiv({ cls: 'pn-random-stats' });
     const btn = wrap.createEl('button', { text: 'Give me a rare word', cls: 'mod-cta pn-random-btn' });
     const result = wrap.createDiv({ cls: 'pn-random-result' });
 
-    btn.addEventListener('click', () => {
-      const pool = allRareWords(this.plugin.personalDictionary);
-      if (pool.length === 0) { result.setText('No vocabulary available.'); return; }
-      const pick = pool[Math.floor(Math.random() * pool.length)];
+    const currentPool = () => poolWithMeta(this.plugin.personalDictionary);
+    const currentFiltered = () => filterPool(currentPool(), state);
+
+    const renderTagPills = (rowEl, tags, activeSet, onToggle) => {
+      rowEl.empty();
+      tags.forEach((tag) => {
+        const pill = rowEl.createEl('button', { cls: 'pn-tag-pill', text: tag });
+        if (activeSet.has(tag)) pill.addClass('pn-tag-pill-active');
+        pill.addEventListener('click', () => {
+          if (activeSet.has(tag)) activeSet.delete(tag); else activeSet.add(tag);
+          refreshFilters();
+        });
+      });
+    };
+
+    const refreshFilters = () => {
+      const pool = currentPool();
+      const tags = allTagsFromPool(pool);
+      renderTagPills(includePillsRow, tags, state.includeTags, refreshFilters);
+      renderTagPills(excludePillsRow, tags, state.excludeTags, refreshFilters);
+      includeModeBtn.setText(state.includeMode === 'and' ? 'Match: all (AND)' : 'Match: any (OR)');
+      includeModeRow.style.display = state.includeTags.size > 1 ? 'block' : 'none';
+      likedPill.toggleClass('pn-tag-pill-active', state.onlyLiked);
+      reviewPill.toggleClass('pn-tag-pill-active', state.onlyExcluded);
+      const n = currentFiltered().length;
+      statsLine.setText(`${n} word${n === 1 ? '' : 's'} match${n === 1 ? 'es' : ''} the current filters (${pool.length} total).`);
+    };
+
+    likedPill.addEventListener('click', () => { state.onlyLiked = !state.onlyLiked; refreshFilters(); });
+    reviewPill.addEventListener('click', () => { state.onlyExcluded = !state.onlyExcluded; refreshFilters(); });
+    includeModeBtn.addEventListener('click', () => {
+      state.includeMode = state.includeMode === 'and' ? 'or' : 'and';
+      refreshFilters();
+    });
+
+    const renderCard = (pick) => {
+      lastPick = pick;
       result.empty();
       const card = result.createDiv({ cls: 'pn-rhyme-section pn-rhyme-perfect pn-random-card' });
       card.createEl('h2', { text: pick.word });
       card.createDiv({ cls: 'pn-random-note', text: pick.note });
-      card.createDiv({ cls: 'pn-random-theme', text: `Theme: ${pick.theme}` });
+
+      const tagsRow = card.createDiv({ cls: 'pn-random-tags' });
+      pick.tags.forEach((tag) => {
+        const isTheme = tag === pick.theme;
+        const chip = tagsRow.createSpan({ cls: 'pn-tag-chip' + (isTheme ? ' pn-tag-chip-theme' : ''), text: tag });
+        if (!isTheme) {
+          const remove = chip.createSpan({ cls: 'pn-tag-chip-remove', text: ' ✕' });
+          remove.addEventListener('click', async () => {
+            await this.plugin.removeWordTag(pick.word, tag);
+            renderCard({ ...pick, tags: pick.tags.filter((t) => t !== tag) });
+            refreshFilters();
+          });
+        }
+      });
+      const addTagRow = card.createDiv({ cls: 'pn-random-add-tag' });
+      const addTagInput = addTagRow.createEl('input', { attr: { type: 'text', placeholder: 'Add a tag…' } });
+      const addTagBtn = addTagRow.createEl('button', { cls: 'pn-icon-btn', text: '+' });
+      const doAddTag = async () => {
+        const t = addTagInput.value.trim();
+        if (!t) return;
+        await this.plugin.addWordTag(pick.word, t);
+        addTagInput.value = '';
+        renderCard({ ...pick, tags: Array.from(new Set([...pick.tags, t])) });
+        refreshFilters();
+      };
+      addTagBtn.addEventListener('click', doAddTag);
+      addTagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doAddTag(); });
+
+      const statusRow = card.createDiv({ cls: 'pn-random-status-row' });
+      const likeBtn = statusRow.createEl('button', { cls: 'pn-tag-pill' + (pick.liked ? ' pn-tag-pill-active' : ''), text: '♥ Liked' });
+      likeBtn.addEventListener('click', async () => {
+        const liked = await this.plugin.toggleWordLiked(pick.word);
+        renderCard({ ...pick, liked });
+        refreshFilters();
+      });
+      const excludeBtn = statusRow.createEl('button', { cls: 'pn-tag-pill' + (pick.excluded ? ' pn-tag-pill-active' : ''), text: '🚫 Exclude from draws' });
+      excludeBtn.addEventListener('click', async () => {
+        const excluded = await this.plugin.toggleWordExcluded(pick.word);
+        renderCard({ ...pick, excluded });
+        refreshFilters();
+      });
 
       const linkRow = card.createDiv({ cls: 'pn-random-links' });
       const defLink = linkRow.createEl('a', { text: 'Look up in Definitions →', attr: { href: '#' } });
@@ -1445,7 +2167,16 @@ class PoetsNotebookView extends ItemView {
           if (input) { input.value = pick.word; input.focus(); }
         }, 0);
       });
+    };
+
+    btn.addEventListener('click', () => {
+      const pool = currentFiltered();
+      if (pool.length === 0) { result.empty(); result.setText('No word matches the current filters.'); return; }
+      const pick = pool[Math.floor(Math.random() * pool.length)];
+      renderCard(pick);
     });
+
+    refreshFilters();
   }
 }
 
@@ -1491,6 +2222,7 @@ class PoetsNotebookSettingTab extends PluginSettingTab {
         .setButtonText('Reload')
         .onClick(async () => {
           await this.plugin.loadCmudict();
+          this.plugin.sonorityBaseline = buildPhonemeFrequencyBaseline(this.plugin.cmudictIndex);
           new Notice(this.plugin.cmudictIndex
             ? `CMUdict loaded: ${this.plugin.cmudictIndex.size} words`
             : 'CMUdict not found in this vault.');
@@ -1532,6 +2264,9 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
 
     await this.loadCmudict();
     await this.loadPersonalDictionary();
+    // Computed once here rather than on every keystroke — scanning the
+    // whole ~135k-word index is not something to redo per render.
+    this.sonorityBaseline = buildPhonemeFrequencyBaseline(this.cmudictIndex);
 
     this.registerView(VIEW_TYPE, (leaf) => new PoetsNotebookView(leaf, this));
 
@@ -1570,6 +2305,7 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
         this.personalDictionary = JSON.parse(found.text);
         if (!this.personalDictionary.synonyms) this.personalDictionary.synonyms = {};
         if (!this.personalDictionary.antonyms) this.personalDictionary.antonyms = {};
+        if (!this.personalDictionary.wordMeta) this.personalDictionary.wordMeta = {};
         this.personalDictionaryPath = found.path;
       } else {
         this.personalDictionary = { synonyms: {}, antonyms: {} };
@@ -1612,6 +2348,47 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
     this.personalDictionary[kind][key] = this.personalDictionary[kind][key].filter((s) => s !== value);
     if (this.personalDictionary[kind][key].length === 0) delete this.personalDictionary[kind][key];
     return await this.savePersonalDictionary();
+  }
+
+  // ---- Random tab metadata: tags / liked / excluded, per word ----
+  // Applies to any word from the pool, built-in or personal — tagging or
+  // excluding a built-in word never touches its definition, it's tracked
+  // entirely separately here.
+  _ensureWordMetaEntry(word) {
+    if (!this.personalDictionary.wordMeta) this.personalDictionary.wordMeta = {};
+    const key = normalizeWordKey(word);
+    if (!this.personalDictionary.wordMeta[key]) {
+      this.personalDictionary.wordMeta[key] = { tags: [], liked: false, excluded: false };
+    }
+    return this.personalDictionary.wordMeta[key];
+  }
+
+  async addWordTag(word, tag) {
+    const t = (tag || '').trim();
+    if (!t) return false;
+    const entry = this._ensureWordMetaEntry(word);
+    if (!entry.tags.includes(t)) entry.tags.push(t);
+    return this.savePersonalDictionary();
+  }
+
+  async removeWordTag(word, tag) {
+    const entry = this._ensureWordMetaEntry(word);
+    entry.tags = entry.tags.filter((x) => x !== tag);
+    return this.savePersonalDictionary();
+  }
+
+  async toggleWordLiked(word) {
+    const entry = this._ensureWordMetaEntry(word);
+    entry.liked = !entry.liked;
+    await this.savePersonalDictionary();
+    return entry.liked;
+  }
+
+  async toggleWordExcluded(word) {
+    const entry = this._ensureWordMetaEntry(word);
+    entry.excluded = !entry.excluded;
+    await this.savePersonalDictionary();
+    return entry.excluded;
   }
 
   async addSynonymToPersonalDictionary(word, synonym) {

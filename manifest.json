@@ -1,9 +1,9 @@
 {
   "id": "poetry-notebook",
   "name": "Poetry Notebook",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "minAppVersion": "0.15.0",
-  "description": "Syllable, meter and rhyme analysis for English poetry (CMUdict-based, with optional Datamuse online lookups).",
+  "description": "Syllable, meter and rhyme analysis for English poetry (CMUdict-based, with optional Datamuse online lookups). Includes an experimental Sonorities panel (alliteration, consonant web, internal assonance, echo endings).",
   "author": "Sébastien Wallachia",
   "authorUrl": "",
   "isDesktopOnly": false
