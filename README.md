@@ -302,6 +302,12 @@ in the changelog below as release notes.
 
 ## Changelog
 
+- **1.4.0** — New **Form** menu in the Syllables tab: checks the poem against a
+  fixed form (Shakespearean / Petrarchan / Spenserian sonnet, villanelle,
+  limerick, haiku, heroic couplets, blank verse, terza rima, ballad stanza)
+  with a ✓ / ✗ / ⚠ checklist and clickable line numbers; a `form:` note
+  property sets it. Rhymes: part-of-speech filter (via Datamuse). Small
+  spacing fix under the online-sources row.
 - **1.3.1** — CSS lint fixes requested by Obsidian's plugin review: no more
   `!important` (more specific selectors instead) and no more `:has()` (toggle
   pills get an `is-checked` class from the code instead). Same look. README:
