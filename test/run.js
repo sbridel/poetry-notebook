@@ -11,8 +11,10 @@ if (!engine.idx) console.log('Warning: cmudict.dict not found at the repository 
 
 require('./test-syllables')(engine);
 require('./test-rhymes')(engine);
+require('./test-rhymes').finesse(engine);
 require('./test-poem')(engine);
 require('./test-forms')(engine);
+require('./test-forms').identical(engine);
 require('./test-sonorities')(engine);
 require('./test-online')(engine);
 require('./test-dictionary')(engine);

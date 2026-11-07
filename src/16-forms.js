@@ -119,6 +119,13 @@ function checkForm(text, formId, cmudictIndex) {
     for (let k = 0; 4 * k + 3 < n; k++) if (keys[4 * k + 1] && keys[4 * k + 3] && keys[4 * k + 1] !== keys[4 * k + 3]) bad.push(4 * k + 4);
     add('Lines 2 and 4 of each quatrain rhyme (ABCB)', bad.length === 0, bad);
   }
+  if (form.scheme || form.couplets || form.terza || form.ballad) {
+    // Identical rhymes (night / knight, or the same word): allowed but weak.
+    const poem = analyzePoem(text, cmudictIndex, null, true);
+    const nonEmpty = poem.lines.filter((l) => !l.empty);
+    const ident = nonEmpty.map((l, i) => (l.identicalWith !== undefined ? i + 1 : 0)).filter(Boolean);
+    add('No identical rhymes (same sound before the vowel, or the same word)', ident.length === 0, ident, ident.length ? 'usually felt as weak in English' : '', true);
+  }
   if (form.unrhymed) {
     const rhymed = [];
     for (let i = 1; i < n; i++) if (keys[i] && keys[i] === keys[i - 1]) rhymed.push(i + 1);

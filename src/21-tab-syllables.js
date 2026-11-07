@@ -475,7 +475,14 @@
         const c = color || 'var(--text-muted)';
         rhymeBadge.style.color = c;
         rhymeBadge.style.borderColor = c;
-        rhymeBadge.setAttr('title', l.letter === '?' ? 'Rhyme unknown (word missing from CMUdict)' : `Rhyme group ${l.letter}`);
+        const kind = l.rhymeParts ? rhymeLengthLabel(l.rhymeParts.length) : null;
+        rhymeBadge.setAttr('title', l.letter === '?' ? 'Rhyme unknown (word missing from CMUdict)'
+          : `Rhyme group ${l.letter}` + (kind ? ` — ${kind} rhyme (${l.rhymeParts.length} syllable${l.rhymeParts.length > 1 ? 's' : ''})` : ''));
+      }
+      if (l.identicalWith !== undefined) {
+        const idBadge = badges.createSpan({ cls: 'pn-hiatus-badge pn-alternance-badge', text: 'identical' });
+        const other = poem.lines[l.identicalWith];
+        idBadge.setAttr('title', `Identical rhyme with "${other.lastWord}" (line ${poem.lines.slice(0, l.identicalWith + 1).filter((x) => !x.empty).length}): same sound before the stressed vowel, or the same word — usually felt as weak in English.`);
       }
       const label = meterLabel(l.meter);
       if (label) {

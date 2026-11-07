@@ -94,3 +94,13 @@ So long lives this, and this gives life to thee.`;
     });
   });
 };
+
+module.exports.identical = function testsFormsIdentical(m) {
+  group('Forms — identical rhymes', () => {
+    test('limerick with a repeated rhyme word: flagged as a point to check', () => {
+      const res = m.checkForm("There was an Old Man with a beard,\nWho said, 'It is just as I feared!\nTwo Owls and a Hen,\nFour Larks and a Wren,\nHave all built their nests in my beard!'", 'limerick', m.idx);
+      const r = res.rules.find((x) => x.label.startsWith('No identical rhymes'));
+      assertTrue(r && !r.ok && r.advice && r.lines.join() === '5', JSON.stringify(r && r.lines));
+    });
+  });
+};

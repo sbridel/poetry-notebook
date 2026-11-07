@@ -74,6 +74,17 @@ are always kept). An optional Datamuse online lookup (off by default) adds any e
 matches; a link opens the word's RhymeZone page in your browser for
 RhymeZone's own advanced filters.
 
+The results say what kind of rhyme the word takes — **masculine** (one
+syllable from the stressed vowel: *night*), **feminine** (two: *dancing*) or
+**triple** (three: *tenderly*) — and keep apart **identical rhymes**, which
+also repeat the sound before the stressed vowel (*night / knight*,
+*light / delight*): unlike the French *rime riche*, English verse usually
+treats them as weak. Near rhymes are split into **assonance** (same stressed
+vowel: *lake / fate*) and **consonance** (same final consonants:
+*shape / keep*). In the Syllables tab, hovering a rhyme letter gives the
+rhyme's length, a red "identical" badge marks an identical rhyme, and the
+Form checklist flags them as a point to check.
+
 ### Synonyms & Antonyms
 Look up a word against your personal dictionary, with an optional Datamuse
 online lookup (off by default) shown as clickable chips — click one to save
@@ -331,6 +342,15 @@ in the changelog below as release notes.
 
 ## Changelog
 
+- **1.5.0** — CMUdict installs itself, a base vocabulary arrives, and rhymes get English finesse.
+  CMUdict and a new base vocabulary (955 themes from Roget's Thesaurus for
+  Inspiration, ~6,400 rare words for Random, WordNet definitions) are
+  downloaded once into the plugin folder; only group slurs are removed,
+  vulgar/sexual words are tagged and left out of Random draws by default.
+  Rhymes: masculine / feminine / triple length, identical rhymes kept apart
+  and flagged (Syllables badge, Form checklist), near rhymes split into
+  assonance and consonance. Fix: a line ending with a closing quote lost its
+  rhyme. Test suite (71 tests) run on every push and before each release.
 - **1.4.1** — CSS lint fixes from Obsidian's plugin review (gap shorthand
   instead of row-gap/column-gap, dotted border instead of a two-value
   text-decoration). Same look.

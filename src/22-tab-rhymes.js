@@ -127,19 +127,34 @@
     } else if (!local) {
       localBody.createEl('p', { cls: 'pn-vide', text: `"${word}" wasn't found in CMUdict, so its rhyme sound is unknown. Try another spelling.` });
     } else {
-      const keep = (list) => list.filter((r) => sylMatch(r.syllableCount) && posMatch(r.word)).map((r) => r.word);
-      const perfect = f.perfect ? keep(local.perfect) : [];
-      const near = showNear ? keep(local.near) : [];
-      if (perfect.length === 0 && near.length === 0) {
+      const keepItems = (list) => list.filter((r) => sylMatch(r.syllableCount) && posMatch(r.word));
+      const perfectItems = f.perfect ? keepItems(local.perfect) : [];
+      const nearItems = showNear ? keepItems(local.near) : [];
+      const kind = rhymeLengthLabel(local.length);
+      if (kind) {
+        localBody.createDiv({ cls: 'pn-son-label', text: `"${word}": ${kind} rhyme — ${local.length} syllable${local.length > 1 ? 's' : ''} from the stressed vowel` });
+      }
+      if (perfectItems.length === 0 && nearItems.length === 0) {
         localBody.createEl('p', { cls: 'pn-vide', text: 'No word matches these filters.' });
       }
-      makeWordGroup(localBody, 'Perfect rhymes', perfect, 'pn-mot', idx);
-      if (near.length) {
-        const block = localBody.createDiv({ cls: 'pn-groupe pn-bloc-assonance' });
-        block.createDiv({ cls: 'pn-titre pn-label-assonance', text: `Near / slant rhymes (${near.length})` });
-        const words = block.createDiv({ cls: 'pn-mots' });
-        showWithLimit(words, near, (w) => makeWordChip(words, w, 'pn-mot pn-mot-assonance', idx));
+      // Identical rhymes (same sound before the stressed vowel: night /
+      // knight, light / delight) are kept apart: usually avoided in English.
+      makeWordGroup(localBody, 'Perfect rhymes', perfectItems.filter((r) => !r.identical).map((r) => r.word), 'pn-mot', idx);
+      const identical = perfectItems.filter((r) => r.identical).map((r) => r.word);
+      if (identical.length) {
+        const g = makeWordGroup(localBody, 'Identical rhymes — same sound before the vowel, usually avoided', identical, 'pn-mot pn-mot-assonance', idx);
+        if (g) g.setAttr('title', 'In English, a rhyme that also repeats the consonant before the stressed vowel (night / knight, light / delight) is felt as weak — the opposite of the French "rime riche".');
       }
+      const nearGroup = (title, list, tip) => {
+        if (!list.length) return;
+        const block = localBody.createDiv({ cls: 'pn-groupe pn-bloc-assonance' });
+        block.createDiv({ cls: 'pn-titre pn-label-assonance', text: `${title} (${list.length})` });
+        block.setAttr('title', tip);
+        const words = block.createDiv({ cls: 'pn-mots' });
+        showWithLimit(words, list, (w) => makeWordChip(words, w, 'pn-mot pn-mot-assonance', idx));
+      };
+      nearGroup('Near rhymes — assonance (same stressed vowel)', nearItems.filter((r) => r.nearType === 'assonance').map((r) => r.word), 'Same stressed vowel, different ending: lake / fate.');
+      nearGroup('Near rhymes — consonance (same final consonants)', nearItems.filter((r) => r.nearType !== 'assonance').map((r) => r.word), 'Same final consonants, different vowel: shape / keep.');
     }
 
     if (!f.online) return;

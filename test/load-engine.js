@@ -15,7 +15,7 @@ const EXPORTS = [
   // syllables / meter
   'lookupWord', 'analyzeLine', 'detectMeter', 'meterLabel', 'heuristicSyllableCount', 'buildCmudictIndex',
   // rhymes
-  'rhymeKeyForWord', 'searchLocalRhymes', 'detectRhymeScheme', 'lastWordOfLine', 'classifyRhymeMatch',
+  'rhymeKeyForWord', 'rhymePartsForWord', 'rhymeLengthLabel', 'isIdenticalRhyme', 'nearRhymeType', 'searchLocalRhymes', 'detectRhymeScheme', 'lastWordOfLine', 'classifyRhymeMatch',
   // whole poem, note import, forms
   'analyzePoem', 'nameRhymeScheme', 'extractPoemFromNote', 'checkForm', 'formIdFromName', 'FORMS', 'FORM_GROUPS',
   // sonorities

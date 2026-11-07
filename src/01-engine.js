@@ -251,7 +251,12 @@ function rhymePartsFromEntry(entry) {
   const vowel = phonemes[lastStressIdx].replace(/\d$/, '');
   const coda = phonemes.slice(lastStressIdx + 1).map((p) => p.replace(/\d$/, '')).join(' ');
   const full = phonemes.slice(lastStressIdx).map((p) => p.replace(/\d$/, '')).join(' ');
-  return { vowel, coda, full, syllableCount: entry.stressPattern.length };
+  // length: syllables in the rhyming part (1 masculine, 2 feminine, 3+ triple);
+  // onset: the sound just before the stressed vowel ('' at word start) —
+  // the same onset on both sides makes an "identical rhyme" (light / delight).
+  const length = phonemes.slice(lastStressIdx).filter((p) => /\d$/.test(p)).length;
+  const onset = lastStressIdx > 0 ? phonemes[lastStressIdx - 1].replace(/\d$/, '') : '';
+  return { vowel, coda, full, length, onset, syllableCount: entry.stressPattern.length };
 }
 
 function rhymePartsForWord(word, cmudictIndex) {
@@ -279,6 +284,27 @@ function classifyRhymeMatch(a, b) {
   return null;
 }
 
+// English rhyme finesse (no quality scale as in French, where a richer
+// rhyme is better — in English an identical sound before the vowel is a
+// weakness): rhyme length, identical rhyme, and the kind of near rhyme.
+function rhymeLengthLabel(n) {
+  if (!n) return null;
+  return n === 1 ? 'masculine' : n === 2 ? 'feminine' : 'triple';
+}
+// Perfect rhyme that also shares the sound before the stressed vowel
+// (night / knight, light / delight), or the same word repeated.
+function isIdenticalRhyme(a, b) {
+  return !!(a && b && a.full === b.full && a.onset === b.onset);
+}
+// For a near rhyme: 'consonance' (same final consonants, other vowel:
+// shape / keep) or 'assonance' (same stressed vowel, other ending: lake / fate).
+function nearRhymeType(a, b) {
+  if (!a || !b || a.full === b.full) return null;
+  if (a.coda !== '' && a.coda === b.coda) return 'consonance';
+  if (a.vowel === b.vowel) return 'assonance';
+  return null;
+}
+
 // Scans the whole CMUdict index for words that perfect- or near-rhyme
 // with `word`. Runs entirely offline. options: { letter, syllables }.
 function searchLocalRhymes(word, cmudictIndex, options) {
@@ -300,16 +326,18 @@ function searchLocalRhymes(word, cmudictIndex, options) {
     if (!parts) continue;
     if (syllables && parts.syllableCount !== syllables) continue;
     const cls = classifyRhymeMatch(queryParts, parts);
-    if (cls === 'perfect') perfect.push({ word: candidateWord, syllableCount: parts.syllableCount });
-    else if (cls === 'near') near.push({ word: candidateWord, syllableCount: parts.syllableCount });
+    if (cls === 'perfect') perfect.push({ word: candidateWord, syllableCount: parts.syllableCount, identical: isIdenticalRhyme(queryParts, parts) });
+    else if (cls === 'near') near.push({ word: candidateWord, syllableCount: parts.syllableCount, nearType: nearRhymeType(queryParts, parts) });
   }
   perfect.sort((a, b) => a.word.localeCompare(b.word));
   near.sort((a, b) => a.word.localeCompare(b.word));
-  return { perfect, near, queryFound: true };
+  return { perfect, near, queryFound: true, length: queryParts.length };
 }
 
+// Last real word of a line: tokens without a letter (a closing quote,
+// a dash) are skipped, so "…in my beard!'" ends on "beard".
 function lastWordOfLine(line) {
-  const words = tokenizeLine(line);
+  const words = tokenizeLine(line).filter((w) => /[A-Za-z]/.test(w));
   return words.length ? words[words.length - 1] : null;
 }
 
@@ -373,8 +401,23 @@ function analyzePoem(text, cmudictIndex, datamuseCache, continuous) {
     indices.forEach((i, j) => {
       lines[i].letter = letters[j];
       lines[i].colorIdx = letters[j] === '?' ? null : (letters[j].charCodeAt(0) - 65);
+      const w = lastWordOfLine(lines[i].text);
+      lines[i].rhymeParts = w ? rhymePartsForWord(w, cmudictIndex) : null;
+      lines[i].lastWord = w;
     });
     return { indices, letters, name: nameRhymeScheme(letters) };
+  });
+  // Identical rhyme: a line whose rhyme repeats an earlier line of the same
+  // group with the same sound before the vowel, or the same word.
+  const byLetter = new Map();
+  lines.forEach((l, i) => {
+    if (l.empty || !l.letter || l.letter === '?') return;
+    const earlier = byLetter.get(l.letter) || [];
+    const twin = earlier.find((j) => isIdenticalRhyme(lines[j].rhymeParts, l.rhymeParts)
+      || (lines[j].lastWord && l.lastWord && lines[j].lastWord.toLowerCase() === l.lastWord.toLowerCase()));
+    if (twin !== undefined) l.identicalWith = twin;
+    earlier.push(i);
+    byLetter.set(l.letter, earlier);
   });
   return { lines, stanzas };
 }

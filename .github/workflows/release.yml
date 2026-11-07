@@ -4,8 +4,9 @@ name: Release Asset with Attestation
 # manifest.json is released if it has no tag yet. The tag and the release
 # are created here (a tag created by GITHUB_TOKEN does not trigger other
 # workflows). Work happens on dev; main only receives versions ready to ship.
-# Release title and notes come from this version's entry in the README's
-# "## Changelog" list ("- **x.y.z** — …").
+# Release notes come from this version's entry in the README's
+# "## Changelog" list ("- **x.y.z** — …"); the title is "[x.y.z] — " followed
+# by that entry's first sentence, so keep it short.
 on:
   push:
     branches:
@@ -43,7 +44,9 @@ jobs:
             on && /^- \*\*[0-9]/ { exit }
             on { sub(/^  /, ""); print }
           ' README.md > notes.md
-          echo "name=[$VERSION]" >> "$GITHUB_OUTPUT"
+          # Release title: [x.y.z] — first sentence of the changelog entry.
+          TITLE=$(head -n 1 notes.md | sed -E 's/^([^.]*)\..*$/\1/' | sed -E 's/[[:space:]]+$//')
+          echo "name=[$VERSION]${TITLE:+ — $TITLE}" >> "$GITHUB_OUTPUT"
 
       - name: Run tests before releasing
         if: steps.version.outputs.exists == 'false'
