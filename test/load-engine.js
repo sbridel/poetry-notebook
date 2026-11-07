@@ -25,7 +25,7 @@ const EXPORTS = [
   // vocabulary pool
   'poolWithMeta', 'filterPool', 'findInspiration', 'allRareWords',
   // online sources (requestUrl is mocked)
-  'downloadCmudict', 'CMUDICT_URL',
+  'downloadCmudict', 'CMUDICT_URL', 'downloadBaseData', 'parseBaseData', 'setBaseData', 'BASE_DATA_URL',
   'fetchFreeDictionaryEntry', 'fetchDatamuseRhymes', 'fetchDatamuseSynonymsRanked', 'fetchDatamuseCollocations',
   // classes
   'PoetsNotebookView', 'RhymeModal', 'InspirationModal',

@@ -27,8 +27,12 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
 
     this.addSettingTab(new PoetsNotebookSettingTab(this.app, this));
 
-    // No CMUdict in the vault: fetch it once in the background.
-    if (!this.cmudictIndex) this.app.workspace.onLayoutReady(() => this.fetchCmudictIfMissing());
+    // Missing data is fetched once, in the background: CMUdict if not in
+    // the vault, the published base data if absent or outdated.
+    this.app.workspace.onLayoutReady(async () => {
+      await this.loadBaseData();
+      if (!this.cmudictIndex) await this.fetchCmudictIfMissing();
+    });
 
     // Right-click on a single selected word in the editor.
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor) => {
@@ -55,6 +59,24 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
       console.error("Poet's Notebook: failed to load CMUdict", e);
       this.cmudictIndex = null;
     }
+  }
+
+  async loadBaseData() {
+    let base = null;
+    try { base = await readLocalBaseData(this.app, this.manifest); }
+    catch (e) { console.warn("Poet's Notebook: local base data unreadable", e); }
+    if (!base && !this._baseDownloadFailed) {
+      try {
+        base = await downloadBaseData(this.app, this.manifest);
+        new Notice(`Poet's Notebook: base vocabulary installed (${base.themes.length} themes, ${base.rareWords.length} rare words).`);
+      } catch (e) {
+        this._baseDownloadFailed = true;
+        console.warn("Poet's Notebook: base data download failed", e);
+      }
+    }
+    if (!base) return;
+    setBaseData(base);
+    this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => leaf.view && leaf.view.render && leaf.view.render());
   }
 
   // Not found in the vault: download it in the background (one attempt

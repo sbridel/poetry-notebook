@@ -888,6 +888,48 @@ async function downloadCmudict(app, manifest) {
   await app.vault.adapter.write(`${app.vault.configDir}/plugins/${manifest.id}/cmudict.dict`, text);
   return { text, index };
 }
+
+// ------------------------------------------------------------
+// Published base data (themes for Inspiration, rare words for Random),
+// built from Roget's Thesaurus (1911) and WordNet — same scheme as the
+// French plugin's published base: a gzipped file attached to the GitHub
+// release, downloaded into the plugin folder, the personal dictionary
+// staying a layer on top. See DATA-LICENSES.md for sources and licences.
+// ------------------------------------------------------------
+const BASE_DATA_VERSION = '1.5.0'; // change only when the base data changes
+const BASE_DATA_FILE = 'poetry-notebook-base.json.gz';
+const BASE_DATA_URL = `https://github.com/sbridel/poetry-notebook/releases/download/${BASE_DATA_VERSION}/${BASE_DATA_FILE}`;
+
+function pluginFolder(app, manifest) {
+  return `${app.vault.configDir}/plugins/${manifest.id}`;
+}
+
+// Parses and checks a base file's bytes; throws if it isn't one.
+async function parseBaseData(bytes) {
+  const base = JSON.parse(await gunzipToText(bytes));
+  if (!base || base.formatBase !== 1 || !Array.isArray(base.themes) || !Array.isArray(base.rareWords)) {
+    throw new Error('unexpected base data file');
+  }
+  return base;
+}
+
+// Downloads the base, validates it BEFORE writing (a broken download never
+// replaces a working file), saves the .gz in the plugin folder.
+async function downloadBaseData(app, manifest) {
+  const res = await requestUrl({ url: BASE_DATA_URL, throw: false });
+  if (!res || res.status !== 200 || !res.arrayBuffer) throw new Error(`HTTP ${res && res.status}`);
+  const base = await parseBaseData(res.arrayBuffer);
+  await app.vault.adapter.writeBinary(`${pluginFolder(app, manifest)}/${BASE_DATA_FILE}`, res.arrayBuffer);
+  return base;
+}
+
+// Local copy if present and of the expected version, else null.
+async function readLocalBaseData(app, manifest) {
+  const path = `${pluginFolder(app, manifest)}/${BASE_DATA_FILE}`;
+  if (!(await app.vault.adapter.exists(path))) return null;
+  const base = await parseBaseData(await app.vault.adapter.readBinary(path));
+  return base.version === BASE_DATA_VERSION ? base : null;
+}
 // ============================================================
 // Datamuse: synonyms
 // ============================================================
@@ -1237,10 +1279,19 @@ function normalizeInspirationWord(w) {
 
 // Merges the built-in themes with any the person added to their personal
 // dictionary under "vocabularyThemes" (same shape: { theme, triggers, words }).
+// Published base data (see 03-vault-files.js), set once it is loaded.
+let BASE_THEMES = [];
+let BASE_RARE_WORDS = [];
+function setBaseData(base) {
+  BASE_THEMES = (base && base.themes) || [];
+  BASE_RARE_WORDS = (base && base.rareWords) || [];
+}
+
 function findInspiration(word, personalDictionary) {
   const key = normalizeInspirationWord(word);
   const allThemes = INSPIRATION_THEMES.concat(
-    (personalDictionary && personalDictionary.vocabularyThemes) || []
+    (personalDictionary && personalDictionary.vocabularyThemes) || [],
+    BASE_THEMES
   );
   return allThemes.filter((t) =>
     (t.triggers || []).some((trig) => normalizeInspirationWord(trig) === key)
@@ -1252,8 +1303,16 @@ function allRareWords(personalDictionary) {
   const personalThemeWords = ((personalDictionary && personalDictionary.vocabularyThemes) || [])
     .flatMap((t) => (t.words || []).map((w) => ({ ...w, theme: t.theme })));
   const personalRareWords = ((personalDictionary && personalDictionary.rareWords) || [])
+    .map((w) => (typeof w === 'string' ? { word: w } : w))
     .map((w) => ({ ...w, theme: w.theme || 'Personal dictionary' }));
-  return fromThemes.concat(personalThemeWords, personalRareWords);
+  // One entry per word: personal entries first, then built-in, then base.
+  const seen = new Set();
+  return personalRareWords.concat(personalThemeWords, fromThemes, BASE_RARE_WORDS).filter((w) => {
+    const k = normalizeWordKey(w && w.word);
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 // ----------------------------------------------------------------
@@ -1287,8 +1346,8 @@ function poolWithMeta(personalDictionary) {
   return allRareWords(personalDictionary).map((w) => {
     const meta = getWordMeta(personalDictionary, w.word);
     const themeTag = w.theme || 'Untagged';
-    const tags = Array.from(new Set([themeTag, ...meta.tags]));
-    return { ...w, tags, liked: meta.liked, excluded: meta.excluded };
+    const tags = Array.from(new Set([themeTag, ...(w.tags || []), ...meta.tags]));
+    return { ...w, tags, userTags: meta.tags, liked: meta.liked, excluded: meta.excluded };
   });
 }
 
@@ -2979,7 +3038,7 @@ class PoetsNotebookView extends ItemView {
       });
     };
 
-    const localBody = makeSourceBlock(results, `${word} — built-in & personal themes`, true, true);
+    const localBody = makeSourceBlock(results, `${word} — themes (built-in, personal, Roget)`, true, true);
     const themes = findInspiration(word, this.plugin.personalDictionary);
     if (themes.length === 0) {
       localBody.createEl('p', {
@@ -3041,7 +3100,7 @@ class PoetsNotebookView extends ItemView {
       multiTagged: false,
     };
     const pool = () => poolWithMeta(this.plugin.personalDictionary);
-    const customTags = (w) => w.tags.filter((t) => t !== (w.theme || 'Untagged'));
+    const customTags = (w) => w.userTags || [];
     const filtered = () => filterPool(pool(), state).filter((w) => {
       const n = customTags(w).length;
       if (state.hideTagged && n > 0) return false;
@@ -3554,8 +3613,12 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
 
     this.addSettingTab(new PoetsNotebookSettingTab(this.app, this));
 
-    // No CMUdict in the vault: fetch it once in the background.
-    if (!this.cmudictIndex) this.app.workspace.onLayoutReady(() => this.fetchCmudictIfMissing());
+    // Missing data is fetched once, in the background: CMUdict if not in
+    // the vault, the published base data if absent or outdated.
+    this.app.workspace.onLayoutReady(async () => {
+      await this.loadBaseData();
+      if (!this.cmudictIndex) await this.fetchCmudictIfMissing();
+    });
 
     // Right-click on a single selected word in the editor.
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor) => {
@@ -3582,6 +3645,24 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
       console.error("Poet's Notebook: failed to load CMUdict", e);
       this.cmudictIndex = null;
     }
+  }
+
+  async loadBaseData() {
+    let base = null;
+    try { base = await readLocalBaseData(this.app, this.manifest); }
+    catch (e) { console.warn("Poet's Notebook: local base data unreadable", e); }
+    if (!base && !this._baseDownloadFailed) {
+      try {
+        base = await downloadBaseData(this.app, this.manifest);
+        new Notice(`Poet's Notebook: base vocabulary installed (${base.themes.length} themes, ${base.rareWords.length} rare words).`);
+      } catch (e) {
+        this._baseDownloadFailed = true;
+        console.warn("Poet's Notebook: base data download failed", e);
+      }
+    }
+    if (!base) return;
+    setBaseData(base);
+    this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => leaf.view && leaf.view.render && leaf.view.render());
   }
 
   // Not found in the vault: download it in the background (one attempt

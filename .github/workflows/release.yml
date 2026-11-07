@@ -49,6 +49,7 @@ jobs:
         if: steps.version.outputs.exists == 'false'
         run: node test/run.js
 
+      # poetry-notebook-base.json.gz (themes + rare words) is committed as is.
       # CMUdict (public domain), gzipped, downloaded by the plugin on first
       # start when no cmudict.dict is in the vault.
       - name: Compress CMUdict
@@ -64,6 +65,7 @@ jobs:
             manifest.json
             styles.css
             cmudict.dict.gz
+            poetry-notebook-base.json.gz
 
       - name: Create GitHub Release
         if: steps.version.outputs.exists == 'false'
@@ -78,5 +80,6 @@ jobs:
             manifest.json
             styles.css
             cmudict.dict.gz
+            poetry-notebook-base.json.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

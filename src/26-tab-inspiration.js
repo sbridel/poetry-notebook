@@ -131,7 +131,7 @@
       });
     };
 
-    const localBody = makeSourceBlock(results, `${word} — built-in & personal themes`, true, true);
+    const localBody = makeSourceBlock(results, `${word} — themes (built-in, personal, Roget)`, true, true);
     const themes = findInspiration(word, this.plugin.personalDictionary);
     if (themes.length === 0) {
       localBody.createEl('p', {

@@ -89,3 +89,45 @@ async function downloadCmudict(app, manifest) {
   await app.vault.adapter.write(`${app.vault.configDir}/plugins/${manifest.id}/cmudict.dict`, text);
   return { text, index };
 }
+
+// ------------------------------------------------------------
+// Published base data (themes for Inspiration, rare words for Random),
+// built from Roget's Thesaurus (1911) and WordNet — same scheme as the
+// French plugin's published base: a gzipped file attached to the GitHub
+// release, downloaded into the plugin folder, the personal dictionary
+// staying a layer on top. See DATA-LICENSES.md for sources and licences.
+// ------------------------------------------------------------
+const BASE_DATA_VERSION = '1.5.0'; // change only when the base data changes
+const BASE_DATA_FILE = 'poetry-notebook-base.json.gz';
+const BASE_DATA_URL = `https://github.com/sbridel/poetry-notebook/releases/download/${BASE_DATA_VERSION}/${BASE_DATA_FILE}`;
+
+function pluginFolder(app, manifest) {
+  return `${app.vault.configDir}/plugins/${manifest.id}`;
+}
+
+// Parses and checks a base file's bytes; throws if it isn't one.
+async function parseBaseData(bytes) {
+  const base = JSON.parse(await gunzipToText(bytes));
+  if (!base || base.formatBase !== 1 || !Array.isArray(base.themes) || !Array.isArray(base.rareWords)) {
+    throw new Error('unexpected base data file');
+  }
+  return base;
+}
+
+// Downloads the base, validates it BEFORE writing (a broken download never
+// replaces a working file), saves the .gz in the plugin folder.
+async function downloadBaseData(app, manifest) {
+  const res = await requestUrl({ url: BASE_DATA_URL, throw: false });
+  if (!res || res.status !== 200 || !res.arrayBuffer) throw new Error(`HTTP ${res && res.status}`);
+  const base = await parseBaseData(res.arrayBuffer);
+  await app.vault.adapter.writeBinary(`${pluginFolder(app, manifest)}/${BASE_DATA_FILE}`, res.arrayBuffer);
+  return base;
+}
+
+// Local copy if present and of the expected version, else null.
+async function readLocalBaseData(app, manifest) {
+  const path = `${pluginFolder(app, manifest)}/${BASE_DATA_FILE}`;
+  if (!(await app.vault.adapter.exists(path))) return null;
+  const base = await parseBaseData(await app.vault.adapter.readBinary(path));
+  return base.version === BASE_DATA_VERSION ? base : null;
+}

@@ -92,12 +92,16 @@ link is always available.
 ### Inspiration
 Type a common word (forest, sea, night, love, time, fire, weather,
 silence…) to get rarer, more literary vocabulary on the same theme, each
-with a short gloss. Ten built-in themes are included. An optional Datamuse
+with a short gloss. Ten hand-written themes are built in, and a published base adds about
+980 more, one per category of Roget's Thesaurus (1911), each word with a
+short WordNet definition (downloaded once, like CMUdict — see
+[Data sources](DATA-LICENSES.md)). An optional Datamuse
 "means like" online lookup (off by default) adds loosely related words.
 
 ### Random
-Draw a random rare/literary word from the same vocabulary pool used by
-Inspiration, with a gloss and quick links to look it up in Definitions or
+Draw a random rare/literary word — about 3,000 from the published base
+(rare words of Roget's Thesaurus with WordNet definitions, some tagged
+`archaic`) plus the built-in and personal ones — with a gloss and quick links to look it up in Definitions or
 search it in Rhymes.
 
 Every word — built-in or from your personal dictionary — can also carry your
@@ -190,7 +194,12 @@ and is required for Sonorities. **It installs itself:** when no
 in the background; until then (or offline) syllable counts use an
 approximate heuristic, and the download is retried at the next start.
 
-**Network use:** this download, and the online lookups you tick yourself
+The same goes for the **base vocabulary** (`poetry-notebook-base.json.gz`,
+about 0.6 MB: Inspiration themes and Random words), downloaded into the
+plugin folder on first start and again only when a new version of it is
+published.
+
+**Network use:** these downloads, and the online lookups you tick yourself
 (Datamuse, Free Dictionary API, Wiktionary), are the only requests the
 plugin makes. Nothing about your notes is sent anywhere.
 

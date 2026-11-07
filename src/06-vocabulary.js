@@ -149,10 +149,19 @@ function normalizeInspirationWord(w) {
 
 // Merges the built-in themes with any the person added to their personal
 // dictionary under "vocabularyThemes" (same shape: { theme, triggers, words }).
+// Published base data (see 03-vault-files.js), set once it is loaded.
+let BASE_THEMES = [];
+let BASE_RARE_WORDS = [];
+function setBaseData(base) {
+  BASE_THEMES = (base && base.themes) || [];
+  BASE_RARE_WORDS = (base && base.rareWords) || [];
+}
+
 function findInspiration(word, personalDictionary) {
   const key = normalizeInspirationWord(word);
   const allThemes = INSPIRATION_THEMES.concat(
-    (personalDictionary && personalDictionary.vocabularyThemes) || []
+    (personalDictionary && personalDictionary.vocabularyThemes) || [],
+    BASE_THEMES
   );
   return allThemes.filter((t) =>
     (t.triggers || []).some((trig) => normalizeInspirationWord(trig) === key)
@@ -164,8 +173,16 @@ function allRareWords(personalDictionary) {
   const personalThemeWords = ((personalDictionary && personalDictionary.vocabularyThemes) || [])
     .flatMap((t) => (t.words || []).map((w) => ({ ...w, theme: t.theme })));
   const personalRareWords = ((personalDictionary && personalDictionary.rareWords) || [])
+    .map((w) => (typeof w === 'string' ? { word: w } : w))
     .map((w) => ({ ...w, theme: w.theme || 'Personal dictionary' }));
-  return fromThemes.concat(personalThemeWords, personalRareWords);
+  // One entry per word: personal entries first, then built-in, then base.
+  const seen = new Set();
+  return personalRareWords.concat(personalThemeWords, fromThemes, BASE_RARE_WORDS).filter((w) => {
+    const k = normalizeWordKey(w && w.word);
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 // ----------------------------------------------------------------
@@ -199,8 +216,8 @@ function poolWithMeta(personalDictionary) {
   return allRareWords(personalDictionary).map((w) => {
     const meta = getWordMeta(personalDictionary, w.word);
     const themeTag = w.theme || 'Untagged';
-    const tags = Array.from(new Set([themeTag, ...meta.tags]));
-    return { ...w, tags, liked: meta.liked, excluded: meta.excluded };
+    const tags = Array.from(new Set([themeTag, ...(w.tags || []), ...meta.tags]));
+    return { ...w, tags, userTags: meta.tags, liked: meta.liked, excluded: meta.excluded };
   });
 }
 

@@ -14,7 +14,7 @@
       multiTagged: false,
     };
     const pool = () => poolWithMeta(this.plugin.personalDictionary);
-    const customTags = (w) => w.tags.filter((t) => t !== (w.theme || 'Untagged'));
+    const customTags = (w) => w.userTags || [];
     const filtered = () => filterPool(pool(), state).filter((w) => {
       const n = customTags(w).length;
       if (state.hideTagged && n > 0) return false;
