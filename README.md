@@ -17,6 +17,7 @@ for English rather than as a translation or extension of it.
 - [Personal dictionary](#personal-dictionary)
 - [Settings](#settings)
 - [Known limitations](#known-limitations)
+- [Development](#development)
 - [Changelog](#changelog)
 
 ## Features
@@ -80,6 +81,18 @@ definition; it's tracked separately. Filter the draw pool by included tags
 a "liked only" quick filter, or a "review excluded" mode to revisit what
 you've set aside — with a live count of how many words match the current
 filters.
+
+### Notes
+Lists the words in your personal dictionary that have no note yet —
+`rareWords` and the words of your own `vocabularyThemes` — each with an
+inline field to add a short definition, saved straight to the dictionary
+file. Built-in themes always carry a note, so they never show up here.
+
+### Right-click on a word
+Select a single word in the editor and right-click: **Rhymes for "…"**
+and **Inspiration around "…"** open the matching results in a pop-up,
+without leaving your note. Pop-ups use local data only (CMUdict and the
+vocabulary themes); no online lookup is made from them.
 
 ### Guide
 A static reference: meter and foot names, perfect vs. slant rhyme, classic
@@ -228,6 +241,21 @@ A word cannot be saved as its own synonym or antonym through the UI.
 - Sonorities is experimental: CMUdict-only (no spelling-based fallback),
   and highlights whole words rather than precise letter ranges — see the
   [Sonorities](#sonorities-experimental) section above for why.
+
+## Development
+
+The source lives in `src/` as numbered files (engine, data, one file per
+tab, settings, plugin), assembled into `main.js` by plain concatenation:
+
+```
+node build.js
+```
+
+Edit the files in `src/`, never `main.js` directly. `styles.css` stays at
+the repository root. A GitHub workflow (`.github/workflows/release.yml`)
+publishes a release automatically when a push to `main` carries a
+`manifest.json` version that has no tag yet, using that version's entry
+in the changelog below as release notes.
 
 ## Changelog
 

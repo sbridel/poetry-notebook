@@ -572,3 +572,14 @@
 .pn-son-c1-underline { border-bottom-color:#6c5ce7 !important; }
 .pn-son-c2-underline { border-bottom-color:#007b63 !important; }
 .pn-son-c3-underline { border-bottom-color:#cb4424 !important; }
+
+/* Notes tab */
+.pn-notes-list { display: flex; flex-direction: column; gap: 6px; }
+.pn-notes-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.88em; }
+.pn-notes-sub { color: var(--text-muted); }
+.pn-notes-input { flex: 1 1 160px; min-width: 0; }
+.pn-notes-tab > .pn-icon-btn { margin-bottom: 8px; }
+.pn-notes-list .pn-placeholder { padding: 6px 0; }
+
+/* Modals (editor right-click) */
+.pn-modal .pn-rhyme-results { max-height: 60vh; overflow-y: auto; }

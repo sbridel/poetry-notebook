@@ -1,6 +1,6 @@
 'use strict';
 
-const { Plugin, ItemView, PluginSettingTab, Setting, Notice, requestUrl } = require('obsidian');
+const { Plugin, ItemView, Modal, PluginSettingTab, Setting, Notice, requestUrl } = require('obsidian');
 
 const VIEW_TYPE = 'poets-notebook-view';
 
@@ -1146,6 +1146,7 @@ class PoetsNotebookView extends ItemView {
       ['definitions', 'Definitions'],
       ['guide', 'Guide'],
       ['random', 'Random'],
+      ['notes', 'Notes'],
     ];
     for (const [id, label] of tabs) {
       const btn = tabBar.createEl('button', { text: label, cls: 'pn-tab-btn' });
@@ -1180,6 +1181,8 @@ class PoetsNotebookView extends ItemView {
       this.renderInspirationTab(body);
     } else if (this.activeTab === 'random') {
       this.renderRandomTab(body);
+    } else if (this.activeTab === 'notes') {
+      this.renderNotesTab(body);
     } else {
       body.createDiv({ cls: 'pn-placeholder', text: 'Coming soon.' });
     }
@@ -1992,45 +1995,50 @@ class PoetsNotebookView extends ItemView {
 
     const results = wrap.createDiv({ cls: 'pn-rhyme-results' });
 
-    const doSearch = async () => {
+    const doSearch = () => {
       const word = wordInput.value.trim();
       if (!word) return;
-      results.empty();
-
-      const themes = findInspiration(word, this.plugin.personalDictionary);
-      if (themes.length === 0) {
-        results.createDiv({ text: `No built-in theme is triggered by "${word}" yet. Try a broader word (forest, sea, night, love, time, fire, weather, silence…), or add your own theme to the personal dictionary.` });
-      } else {
-        for (const t of themes) {
-          const section = results.createDiv({ cls: 'pn-rhyme-section pn-rhyme-perfect' });
-          section.createEl('h4', { text: `${t.theme} (${t.words.length})` });
-          const list = section.createEl('div', { cls: 'pn-inspiration-word-grid' });
-          for (const w of t.words) {
-            const item = list.createDiv({ cls: 'pn-inspiration-word' });
-            item.createEl('strong', { text: w.word });
-            item.createSpan({ text: ' — ' + w.note });
-          }
-        }
-      }
-
-      if (datamuseCheckbox.checked) {
-        const loading = results.createDiv({ cls: 'pn-rhyme-loading', text: 'Querying Datamuse…' });
-        try {
-          const related = await fetchDatamuseMeansLike(word);
-          loading.remove();
-          const section = results.createDiv({ cls: 'pn-rhyme-section pn-rhyme-online' });
-          section.createEl('h4', { text: `Online — Datamuse, related to "${word}" (${related.length})` });
-          section.createDiv({ cls: 'pn-rhyme-word-list', text: related.length ? related.join(', ') : 'Nothing found.' });
-        } catch (e) {
-          loading.setText('Datamuse request failed (offline, or the API is unavailable).');
-        }
-      }
+      this.renderInspirationResults(results, word, datamuseCheckbox.checked);
     };
 
     searchBtn.addEventListener('click', doSearch);
     wordInput.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') doSearch(); });
   }
 
+  // Shared by the Inspiration tab and the Inspiration modal (editor
+  // right-click on a selection). Uses only this.plugin.
+  async renderInspirationResults(results, word, includeDatamuse) {
+    results.empty();
+
+    const themes = findInspiration(word, this.plugin.personalDictionary);
+    if (themes.length === 0) {
+      results.createDiv({ text: `No built-in theme is triggered by "${word}" yet. Try a broader word (forest, sea, night, love, time, fire, weather, silence…), or add your own theme to the personal dictionary.` });
+    } else {
+      for (const t of themes) {
+        const section = results.createDiv({ cls: 'pn-rhyme-section pn-rhyme-perfect' });
+        section.createEl('h4', { text: `${t.theme} (${t.words.length})` });
+        const list = section.createEl('div', { cls: 'pn-inspiration-word-grid' });
+        for (const w of t.words) {
+          const item = list.createDiv({ cls: 'pn-inspiration-word' });
+          item.createEl('strong', { text: w.word });
+          item.createSpan({ text: ' — ' + w.note });
+        }
+      }
+    }
+
+    if (includeDatamuse) {
+      const loading = results.createDiv({ cls: 'pn-rhyme-loading', text: 'Querying Datamuse…' });
+      try {
+        const related = await fetchDatamuseMeansLike(word);
+        loading.remove();
+        const section = results.createDiv({ cls: 'pn-rhyme-section pn-rhyme-online' });
+        section.createEl('h4', { text: `Online — Datamuse, related to "${word}" (${related.length})` });
+        section.createDiv({ cls: 'pn-rhyme-word-list', text: related.length ? related.join(', ') : 'Nothing found.' });
+      } catch (e) {
+        loading.setText('Datamuse request failed (offline, or the API is unavailable).');
+      }
+    }
+  }
   // ---- Random tab ----
   renderRandomTab(body) {
     const wrap = body.createDiv({ cls: 'pn-random-tab' });
@@ -2178,6 +2186,135 @@ class PoetsNotebookView extends ItemView {
 
     refreshFilters();
   }
+
+  // ---- Notes tab ----
+  // Lists personal-dictionary words that have no note yet (rareWords and
+  // vocabularyThemes words), each with an inline field to add one.
+  // Built-in themes always carry a note, so only personal entries show up.
+  // Mirrors the French plugin's Notes tab.
+  renderNotesTab(body) {
+    const wrap = body.createDiv({ cls: 'pn-notes-tab' });
+    const refreshBtn = wrap.createEl('button', { cls: 'pn-icon-btn', text: '↻ Refresh list' });
+
+    const rareSection = wrap.createDiv({ cls: 'pn-rhyme-section' });
+    rareSection.createEl('h4', { text: 'Rare words without a note' });
+    const rareList = rareSection.createDiv({ cls: 'pn-notes-list' });
+
+    const themeSection = wrap.createDiv({ cls: 'pn-rhyme-section' });
+    themeSection.createEl('h4', { text: 'Theme words without a note' });
+    const themeList = themeSection.createDiv({ cls: 'pn-notes-list' });
+
+    const dict = () => this.plugin.personalDictionary || {};
+
+    const renderEditRow = (container, word, subText, save) => {
+      const row = container.createDiv({ cls: 'pn-notes-row' });
+      row.createEl('strong', { text: word });
+      if (subText) row.createSpan({ cls: 'pn-notes-sub', text: subText });
+      const input = row.createEl('input', {
+        cls: 'pn-notes-input',
+        attr: { type: 'text', placeholder: 'note / short definition' },
+      });
+      const btn = row.createEl('button', { text: 'Save' });
+      const submit = async () => {
+        const note = input.value.trim();
+        if (!note) return;
+        save(note);
+        await this.plugin.savePersonalDictionary();
+        new Notice(`Poet's Notebook: note added for "${word}".`);
+        row.remove();
+      };
+      btn.addEventListener('click', submit);
+      input.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') submit(); });
+    };
+
+    const rerender = () => {
+      rareList.empty();
+      themeList.empty();
+
+      const rare = Array.isArray(dict().rareWords) ? dict().rareWords : [];
+      let rareCount = 0;
+      rare.forEach((entry, i) => {
+        const word = typeof entry === 'string' ? entry : entry && entry.word;
+        if (!word || (entry && entry.note)) return;
+        rareCount++;
+        renderEditRow(rareList, word, '', (note) => {
+          if (typeof rare[i] === 'string') rare[i] = { word, note };
+          else rare[i].note = note;
+        });
+      });
+      if (rareCount === 0) rareList.createDiv({ cls: 'pn-placeholder', text: 'All your rare words have a note.' });
+
+      const themes = Array.isArray(dict().vocabularyThemes) ? dict().vocabularyThemes : [];
+      let themeCount = 0;
+      themes.forEach((t) => {
+        const words = Array.isArray(t && t.words) ? t.words : [];
+        words.forEach((entry, i) => {
+          const word = typeof entry === 'string' ? entry : entry && entry.word;
+          if (!word || (entry && entry.note)) return;
+          themeCount++;
+          renderEditRow(themeList, word, `(${t.theme || 'untitled theme'})`, (note) => {
+            if (typeof words[i] === 'string') words[i] = { word, note };
+            else words[i].note = note;
+          });
+        });
+      });
+      if (themeCount === 0) themeList.createDiv({ cls: 'pn-placeholder', text: 'All words in your personal themes have a note.' });
+    };
+
+    rerender();
+    refreshBtn.addEventListener('click', rerender);
+  }
+}
+
+// ============================================================
+// MODALS — rhymes / inspiration for a word selected in the editor
+// (right-click menu). They reuse the view's rendering methods, which
+// only depend on this.plugin. Local data only: no online lookup is
+// made from a modal.
+// ============================================================
+class RhymeModal extends Modal {
+  constructor(app, plugin, word) {
+    super(app);
+    this.plugin = plugin;
+    this.word = word;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass('pn-modal');
+    contentEl.createEl('h3', { text: `Rhymes for "${this.word}"` });
+    const results = contentEl.createDiv({ cls: 'pn-rhyme-results' });
+    PoetsNotebookView.prototype.runRhymeSearch.call(
+      { plugin: this.plugin, renderRhymeGroup: PoetsNotebookView.prototype.renderRhymeGroup },
+      this.word, { letter: '', syllables: null, includeDatamuse: false }, results
+    );
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
+class InspirationModal extends Modal {
+  constructor(app, plugin, word) {
+    super(app);
+    this.plugin = plugin;
+    this.word = word;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass('pn-modal');
+    contentEl.createEl('h3', { text: `Inspiration around "${this.word}"` });
+    const results = contentEl.createDiv({ cls: 'pn-rhyme-results' });
+    PoetsNotebookView.prototype.renderInspirationResults.call(
+      { plugin: this.plugin }, results, this.word, false
+    );
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
+// Single word from the current selection (trimmed, surrounding
+// punctuation stripped), or null if the selection isn't one word.
+function singleWordFromSelection(selection) {
+  const w = normalizeApostrophes(selection || '').trim()
+    .replace(/^[^A-Za-z']+|[^A-Za-z']+$/g, '');
+  return w && /^[A-Za-z][A-Za-z'-]*$/.test(w) ? w : null;
 }
 
 // ============================================================
@@ -2278,6 +2415,20 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
     });
 
     this.addSettingTab(new PoetsNotebookSettingTab(this.app, this));
+
+    // Right-click on a single selected word in the editor.
+    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor) => {
+      const word = singleWordFromSelection(editor.getSelection());
+      if (!word) return;
+      menu.addItem((item) => item
+        .setTitle(`Rhymes for "${word}"`)
+        .setIcon('feather')
+        .onClick(() => new RhymeModal(this.app, this, word).open()));
+      menu.addItem((item) => item
+        .setTitle(`Inspiration around "${word}"`)
+        .setIcon('sparkles')
+        .onClick(() => new InspirationModal(this.app, this, word).open()));
+    }));
   }
 
   async loadCmudict() {
