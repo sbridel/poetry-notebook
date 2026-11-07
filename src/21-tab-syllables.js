@@ -36,14 +36,7 @@
     const flipBack = flipCard.createDiv({ cls: 'pn-flip-face pn-flip-back' });
 
     const toolbar = flipFront.createDiv({ cls: 'pn-toolbar' });
-    const mkToggle = (parent, label, checked, title) => {
-      const lbl = parent.createEl('label', { cls: 'pn-hasard-toggle-pool' });
-      const input = lbl.createEl('input', { attr: { type: 'checkbox' } });
-      input.checked = checked;
-      lbl.createSpan({ text: ' ' + label });
-      if (title) lbl.setAttr('title', title);
-      return input;
-    };
+    const mkToggle = (parent, label, checked, title) => makeTogglePill(parent, label, checked, title);
     const colorsToggle = mkToggle(toolbar, 'Rhyme colors', this.plugin.settings.showRhymeColors !== false);
     const continuousToggle = mkToggle(toolbar, 'Continuous rhymes across stanzas', this.plugin.settings.continuousRhymes !== false,
       'By default each stanza starts again at A. Check to carry the letters on from one stanza to the next (useful for sonnets: ABAB CDCD EFEF GG rather than ABAB ABAB…).');
@@ -185,14 +178,7 @@
     const seuilLabel = toolbar.createDiv({ cls: 'pn-son-seuil' });
     seuilLabel.createSpan({ text: 'Threshold ' });
     const seuilInput = seuilLabel.createEl('input', { attr: { type: 'number', min: '2', max: '9', value: '3' } });
-    const mkToggle = (label, checked, title) => {
-      const lbl = toolbar.createEl('label', { cls: 'pn-hasard-toggle-pool' });
-      const input = lbl.createEl('input', { attr: { type: 'checkbox' } });
-      input.checked = checked;
-      lbl.createSpan({ text: ' ' + label });
-      if (title) lbl.setAttr('title', title);
-      return input;
-    };
+    const mkToggle = (label, checked, title) => makeTogglePill(toolbar, label, checked, title);
     const stopwordsToggle = mkToggle('Exclude stopwords', true);
     const top3Toggle = mkToggle('Highlight only the 3 most frequent', true,
       'The list stays complete; only the highlighting in the draft is limited to the 3 most frequent alliterations and assonances, for a less busy text.');

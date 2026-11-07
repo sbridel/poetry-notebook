@@ -6,7 +6,9 @@
      sed -e 's/\.carnet-poete-view/.poets-notebook-view/g' \
          -e 's/\.cp-/.pn-/g' -e 's/cp-icon-flip-anim/pn-icon-flip-anim/g' \
          -e 's/cp-nature/pn-nature/g' carnet/src/styles.css
-   then keep section 2 (English-only additions) below it. */
+   then keep section 2 (English-only additions) below it, and re-apply the
+   lint fixes Obsidian's review asks for: no "important" flags (higher specificity
+   instead) and no "has" pseudo-class (an is-checked class set from JS instead). */
 
 .poets-notebook-view{ padding: 4px 14px 24px; font-family: var(--font-interface); }
 .poets-notebook-view h2{ font-family: var(--font-text); font-style: italic; font-weight: 500; margin-bottom: 4px; }
@@ -64,7 +66,7 @@
 .pn-source-toggle{ display:inline-flex; align-items:center; cursor:pointer; color: var(--text-normal); gap:2px; }
 .pn-hasard-ligne-raccourcis{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:8px; }
 .pn-hasard-toggle-pool{ display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8em; font-weight:500; color: var(--text-muted); background: var(--background-primary-alt); border:1.5px solid var(--background-modifier-border); border-radius:14px; padding:4px 12px; }
-.pn-hasard-toggle-pool:has(input:checked){ background: var(--text-accent); border-color: var(--text-accent); color: var(--text-on-accent, #fff); }
+.pn-hasard-toggle-pool.is-checked{ background: var(--text-accent); border-color: var(--text-accent); color: var(--text-on-accent, #fff); }
 .pn-hasard-toggle-pool.active{ background: var(--text-accent); border-color: var(--text-accent); color: var(--text-on-accent, #fff); }
 .pn-hasard-toggle-pool input{ position:absolute; opacity:0; width:0; height:0; margin:0; pointer-events:none; }
 .pn-source-toggle input{ cursor:pointer; }
@@ -101,13 +103,11 @@
 .pn-qualite-filtres{ display:flex; gap:8px; flex-wrap:wrap; }
 .pn-qualite-sousfiltres{ margin-left:16px; padding-left:10px; border-left: 2px solid var(--background-modifier-border); font-size:0.95em; opacity:0.85; }
 .pn-qualite-pill{ border-color: var(--qcolor); color: var(--qcolor); }
-.pn-qualite-pill:has(input:checked){ background: var(--qcolor); border-color: var(--qcolor); color:#2a2a2a; }
 /* Nature (filtre grammatical) : contour seul, jamais de fond plein — ces
    catégories ne sont reprises nulle part ailleurs dans l'affichage,
    contrairement aux couleurs de qualité, d'où un style plus discret. */
 .pn-cgram-filtres{ display:flex; gap:8px; flex-wrap:wrap; }
 .pn-cgram-pill{ display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8em; font-weight:500; background:transparent; border:1.5px solid var(--background-modifier-border); border-radius:14px; padding:4px 12px; color: var(--text-faint); }
-.pn-cgram-pill:has(input:checked){ border-color: var(--ccolor); color: var(--ccolor); }
 .pn-cgram-pill input{ position:absolute; opacity:0; width:0; height:0; margin:0; pointer-events:none; }
 .pn-select-wrap{ position:relative; display:inline-flex; align-items:center; }
 .pn-select-wrap select{ padding-right:20px; }
@@ -134,8 +134,8 @@
 .pn-bilan-conseil .pn-bilan-icone{ color: var(--text-warning, var(--color-orange)); }
 .pn-schema-ligne{ display:flex; align-items:center; gap:8px; font-family: var(--font-monospace); font-size:0.8em; color: var(--text-muted); padding:2px 0; letter-spacing:0.15em; }
 .pn-hasard-bouton-wrap{ display:flex; justify-content:center; margin-bottom:20px; }
-.pn-hasard-bouton{ display:inline-flex; align-items:center; justify-content:center; text-align:center; width:auto; padding:12px 32px; font-family: var(--font-text); font-style:italic; font-size:1.1em; font-weight:600; background: var(--background-primary) !important; color: var(--text-muted) !important; border:1.5px solid var(--text-faint) !important; border-radius:24px; cursor:pointer; transition: background 0.15s, border-color 0.15s, transform 0.1s; }
-.pn-hasard-bouton:hover{ border-color: var(--text-muted) !important; color: var(--text-normal) !important; transform: translateY(-1px); }
+.poets-notebook-view .pn-hasard-bouton{ display:inline-flex; align-items:center; justify-content:center; text-align:center; width:auto; padding:12px 32px; font-family: var(--font-text); font-style:italic; font-size:1.1em; font-weight:600; background: var(--background-primary); color: var(--text-muted); border:1.5px solid var(--text-faint); border-radius:24px; cursor:pointer; transition: background 0.15s, border-color 0.15s, transform 0.1s; }
+.poets-notebook-view .pn-hasard-bouton:hover{ border-color: var(--text-muted); color: var(--text-normal); transform: translateY(-1px); }
 .pn-hasard-zone{ margin-top:22px; text-align:center; padding:24px 20px; background: var(--background-primary-alt); border:1px solid var(--background-modifier-border); border-radius:12px; }
 .pn-hasard-mot{ font-family: var(--font-text); font-style:italic; font-weight:700; font-size:2em; color:#c0392b; margin-bottom:10px; }
 .pn-hasard-note{ font-size:0.9em; color: var(--text-muted); max-width:44ch; margin:0 auto 16px; line-height:1.6; }
@@ -348,7 +348,7 @@
 .pn-inspi-note{ font-size:0.82em; color: var(--text-muted); font-style:italic; }
 .pn-inspi-cliquable{ cursor:pointer; border-radius:3px; }
 .pn-inspi-cliquable:hover{ box-shadow: 0 0 0 2px var(--background-modifier-hover); }
-.pn-inspi-cliquable.pn-selectionne{ background:#c0392b !important; border-color:#c0392b !important; color:#fff !important; }
+.poets-notebook-view .pn-mots .pn-inspi-cliquable.pn-selectionne, .poets-notebook-view .pn-inspi-cliquable.pn-selectionne{ background:#c0392b; border-color:#c0392b; color:#fff; }
 .pn-inspi-action-bar{ display:flex; flex-direction:column; gap:10px; margin:14px 0; padding:12px; background: var(--background-primary-alt); border:1px solid var(--background-modifier-border); border-radius:8px; }
 .pn-inspi-selection-chips{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:0.85em; }
 .pn-inspi-selection-actions{ display:flex; flex-wrap:wrap; gap:10px; }

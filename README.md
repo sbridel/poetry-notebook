@@ -163,7 +163,7 @@ given sound the way the French plugin's orthographic scan can.
 ## Installation
 
 1. Copy `main.js`, `manifest.json`, and `styles.css` into a new folder at
-   `<vault>/.obsidian/plugins/poets-notebook/`.
+   `<vault>/.obsidian/plugins/poetry-notebook/`.
 2. In Obsidian, go to Settings → Community plugins, and enable "Poet's
    Notebook."
 3. Open it from the ribbon icon (feather) or the command palette ("Open
@@ -178,7 +178,7 @@ rhyme detection — and is required for Sonorities.
 1. Download `cmudict.dict` from the official repository:
    https://github.com/cmusphinx/cmudict
 2. Place it in your vault at any of the following (checked in this order):
-   - `<vault>/.obsidian/plugins/poets-notebook/cmudict.dict`
+   - `<vault>/.obsidian/plugins/poetry-notebook/cmudict.dict`
    - `<vault>/.obsidian/cmudict.dict`
    - `<vault>/cmudict.dict` (vault root)
    - anywhere else in the vault — the plugin falls back to a recursive
@@ -290,6 +290,11 @@ in the changelog below as release notes.
 
 ## Changelog
 
+- **1.3.1** — CSS lint fixes requested by Obsidian's plugin review: no more
+  `!important` (more specific selectors instead) and no more `:has()` (toggle
+  pills get an `is-checked` class from the code instead). Same look. README:
+  install folder corrected to `.obsidian/plugins/poetry-notebook/` (the
+  plugin id).
 - **1.3.0** — Layout and styles aligned with the French sibling plugin, Carnet du
   Poète, across all tabs (title, persistent tabs, framed filters, collapsible
   per-source results, word chips with syllable counts). Syllables: Export and

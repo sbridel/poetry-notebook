@@ -53,13 +53,18 @@ function makeSyllableSelect(parent) {
   return select;
 }
 
-// A toggle pill (checkbox hidden, filled when checked).
+// A toggle pill (checkbox hidden, filled when checked). The filled state
+// comes from an is-checked class kept in sync here rather than a CSS
+// :has(input:checked) selector, which Obsidian's review flags as costly.
 function makeTogglePill(parent, label, checked, title) {
   const lbl = parent.createEl('label', { cls: 'pn-hasard-toggle-pool' });
   const input = lbl.createEl('input', { attr: { type: 'checkbox' } });
   input.checked = !!checked;
   lbl.createSpan({ text: ' ' + label });
   if (title) lbl.setAttr('title', title);
+  const sync = () => lbl.toggleClass('is-checked', input.checked);
+  input.addEventListener('change', sync);
+  sync();
   return input;
 }
 
