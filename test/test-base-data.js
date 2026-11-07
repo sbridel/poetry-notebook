@@ -14,13 +14,18 @@ module.exports = function testsBaseData(m) {
       const base = await m.parseBaseData(ab);
       assertTrue(base._legend && base._legend.includes('Roget') && base._legend.includes('WordNet'), 'legend');
       assertTrue(base.themes.length > 900, String(base.themes.length));
-      assertTrue(base.rareWords.length > 2500, String(base.rareWords.length));
+      assertTrue(base.rareWords.length > 5000, String(base.rareWords.length));
     });
-    test('every word is in CMUdict and has a note', async () => {
+    test('every word has a note; theme words are in CMUdict; rare words are, or flagged estimated', async () => {
       const base = await m.parseBaseData(ab);
-      const words = base.rareWords.concat(...base.themes.map((t) => t.words));
-      const missing = words.filter((w) => !m.idx.has(w.word) || !w.note).map((w) => w.word);
-      assertEqual(missing.slice(0, 5).join(), '');
+      const themeWords = [].concat(...base.themes.map((t) => t.words));
+      assertEqual(themeWords.filter((w) => !m.idx.has(w.word) || !w.note).map((w) => w.word).slice(0, 5).join(), '', 'themes');
+      assertEqual(base.rareWords.filter((w) => !w.note || (!m.idx.has(w.word) && !w.estimated)).map((w) => w.word).slice(0, 5).join(), '', 'rare');
+    });
+    test('words with an innocent main meaning are kept (sense-level filtering)', async () => {
+      const base = await m.parseBaseData(ab);
+      const all = new Set(base.rareWords.map((w) => w.word).concat(...base.themes.map((t) => t.words.map((w) => w.word))));
+      ['jade', 'drab', 'wicked', 'nestling'].forEach((w) => assertTrue(all.has(w), w));
     });
     test('download URL matches the release that ships the file', () => {
       assertTrue(m.BASE_DATA_URL.endsWith('/poetry-notebook-base.json.gz'), m.BASE_DATA_URL);

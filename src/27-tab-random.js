@@ -215,6 +215,9 @@
       wordEl.setText(current.word);
       noteEl.empty();
       if (current.note) noteEl.createDiv({ cls: 'pn-hasard-note-partie', text: current.note });
+      if (current.estimated) {
+        noteEl.createDiv({ cls: 'pn-hasard-note-sep', text: 'not in CMUdict: syllables estimated, rhymes only online (Datamuse)' });
+      }
       chipsDiv.empty();
       const theme = current.theme || 'Untagged';
       const themeChip = chipsDiv.createSpan({ cls: 'pn-tag-chip', text: theme });

@@ -93,15 +93,15 @@ link is always available.
 Type a common word (forest, sea, night, love, time, fire, weather,
 silence…) to get rarer, more literary vocabulary on the same theme, each
 with a short gloss. Ten hand-written themes are built in, and a published base adds about
-980 more, one per category of Roget's Thesaurus (1911), each word with a
+950 more, one per category of Roget's Thesaurus (1911), each word with a
 short WordNet definition (downloaded once, like CMUdict — see
 [Data sources](DATA-LICENSES.md)). An optional Datamuse
 "means like" online lookup (off by default) adds loosely related words.
 
 ### Random
-Draw a random rare/literary word — about 3,000 from the published base
+Draw a random rare/literary word — about 6,300 from the published base
 (rare words of Roget's Thesaurus with WordNet definitions, some tagged
-`archaic`) plus the built-in and personal ones — with a gloss and quick links to look it up in Definitions or
+`archaic`) plus the built-in and personal ones (about half are not in CMUdict: their syllables are estimated) — with a gloss and quick links to look it up in Definitions or
 search it in Rhymes.
 
 Every word — built-in or from your personal dictionary — can also carry your
