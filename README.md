@@ -259,6 +259,11 @@ in the changelog below as release notes.
 
 ## Changelog
 
+- **1.2.0** — New **Notes** tab: personal-dictionary words without a note
+  (rare words and personal theme words), each with an inline field to add one.
+  Right-click a single selected word in the editor for **Rhymes** or
+  **Inspiration** in a pop-up (local data only). Source split into `src/`
+  and assembled by `node build.js`; automatic GitHub release on push to `main`.
 - **1.1.0** — New experimental **Sonorities** panel on the flip side of the Syllables tab's
   card: alliteration, consonant web, internal assonance, echo endings, with a live
   frequency-ratio badge per sound (see above). Random tab: words (built-in or personal) can now
