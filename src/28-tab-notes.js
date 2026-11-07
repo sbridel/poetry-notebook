@@ -1,32 +1,28 @@
 
   // ---- Notes tab ----
-  // Lists personal-dictionary words that have no note yet (rareWords and
-  // vocabularyThemes words), each with an inline field to add one.
-  // Built-in themes always carry a note, so only personal entries show up.
-  // Mirrors the French plugin's Notes tab.
-  renderNotesTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-notes-tab' });
-    const refreshBtn = wrap.createEl('button', { cls: 'pn-icon-btn', text: '↻ Refresh list' });
+  // Same structure as the French Notes tab: lists personal-dictionary
+  // words that have no note yet (rareWords and vocabularyThemes words),
+  // each with an inline field to add one. Built-in themes always carry a
+  // note, so only personal entries show up. Refreshed on each tab visit.
+  renderNotesTab(panel) {
+    const refreshBtn = panel.createEl('button', { cls: 'pn-link-btn', text: '↻ Refresh the list' });
 
-    const rareSection = wrap.createDiv({ cls: 'pn-rhyme-section' });
-    rareSection.createEl('h4', { text: 'Rare words without a note' });
-    const rareList = rareSection.createDiv({ cls: 'pn-notes-list' });
+    const rareSection = panel.createDiv({ cls: 'pn-groupe' });
+    rareSection.createDiv({ cls: 'pn-son-label', text: 'Rare words without a note' });
+    const rareList = rareSection.createDiv({ cls: 'pn-inspi-liste' });
 
-    const themeSection = wrap.createDiv({ cls: 'pn-rhyme-section' });
-    themeSection.createEl('h4', { text: 'Theme words without a note' });
-    const themeList = themeSection.createDiv({ cls: 'pn-notes-list' });
+    const themeSection = panel.createDiv({ cls: 'pn-groupe' });
+    themeSection.createDiv({ cls: 'pn-son-label', text: 'Theme words without a note' });
+    const themeList = themeSection.createDiv({ cls: 'pn-inspi-liste' });
 
     const dict = () => this.plugin.personalDictionary || {};
 
     const renderEditRow = (container, word, subText, save) => {
-      const row = container.createDiv({ cls: 'pn-notes-row' });
-      row.createEl('strong', { text: word });
-      if (subText) row.createSpan({ cls: 'pn-notes-sub', text: subText });
-      const input = row.createEl('input', {
-        cls: 'pn-notes-input',
-        attr: { type: 'text', placeholder: 'note / short definition' },
-      });
-      const btn = row.createEl('button', { text: 'Save' });
+      const row = container.createDiv({ cls: 'pn-inspi-mot' });
+      row.createSpan({ cls: 'pn-inspi-terme', text: word });
+      if (subText) row.createSpan({ cls: 'pn-inspi-note', text: subText });
+      const input = row.createEl('input', { attr: { type: 'text', placeholder: 'note / short definition' } });
+      const btn = row.createEl('button', { cls: 'pn-link-btn', text: 'Save' });
       const submit = async () => {
         const note = input.value.trim();
         if (!note) return;
@@ -54,7 +50,7 @@
           else rare[i].note = note;
         });
       });
-      if (rareCount === 0) rareList.createDiv({ cls: 'pn-placeholder', text: 'All your rare words have a note.' });
+      if (rareCount === 0) rareList.createEl('p', { cls: 'pn-vide', text: 'All your rare words have a note.' });
 
       const themes = Array.isArray(dict().vocabularyThemes) ? dict().vocabularyThemes : [];
       let themeCount = 0;
@@ -70,9 +66,10 @@
           });
         });
       });
-      if (themeCount === 0) themeList.createDiv({ cls: 'pn-placeholder', text: 'All words in your personal themes have a note.' });
+      if (themeCount === 0) themeList.createEl('p', { cls: 'pn-vide', text: 'All words in your personal themes have a note.' });
     };
 
     rerender();
     refreshBtn.addEventListener('click', rerender);
+    this._refreshNotes = rerender;
   }

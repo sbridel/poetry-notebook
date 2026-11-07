@@ -1,13 +1,9 @@
   // ---- Guide tab (static reference content, no network) ----
-  renderGuideTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-guide-tab' });
-
-    const section = (title, html) => {
-      const s = wrap.createDiv({ cls: 'pn-guide-section' });
-      s.createEl('h3', { text: title });
-      const content = s.createDiv({ cls: 'pn-guide-content' });
-      content.innerHTML = html;
-    };
+  // Same structure as the French Guide: a table of contents box, then
+  // one collapsible section per topic (the first one open).
+  renderGuideTab(panel) {
+    const sections = [];
+    const section = (title, html) => sections.push({ title, html });
 
     section('Counting syllables & meter', `
       <p>English meter counts <strong>stressed feet</strong>, not raw syllables — unlike French,
@@ -72,5 +68,27 @@
       per-word tooltip will show which source (CMUdict / override / heuristic) was used, which
       is usually the fastest way to spot the mismatch.</p>
     `);
-  }
 
+    const toc = panel.createDiv({ cls: 'pn-guide-sommaire' });
+    toc.createDiv({ cls: 'pn-guide-sommaire-titre', text: 'Contents' });
+    const tocList = toc.createEl('ul');
+    const detailsEls = [];
+    sections.forEach((s, i) => {
+      const link = tocList.createEl('li').createEl('a', { text: s.title, attr: { href: '#' } });
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        detailsEls[i].open = true;
+        detailsEls[i].scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+    sections.forEach((s, i) => {
+      const det = panel.createEl('details', { cls: 'pn-guide-section' });
+      if (i === 0) det.setAttr('open', 'true');
+      det.createEl('summary', { cls: 'pn-guide-titre', text: s.title });
+      const body = det.createDiv({ cls: 'pn-guide-corps' });
+      body.innerHTML = s.html;
+      body.querySelectorAll('p').forEach((el) => el.classList.add('pn-guide-p'));
+      body.querySelectorAll('ul, ol').forEach((el) => el.classList.add('pn-guide-liste'));
+      detailsEls.push(det);
+    });
+  }

@@ -1,147 +1,300 @@
   // ---- Random tab ----
-  renderRandomTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-random-tab' });
-
-    // Filter state, kept in closure across re-renders of this tab instance.
+  // Same structure as the French Hasard tab: a "quick draw" banner of
+  // filter shortcuts, two collapsible sections (filter by tags / exclude
+  // tags), the draw zone (counter, button, word, note, tags, actions,
+  // tag presets and form), then "add a rare word" and statistics.
+  renderRandomTab(panel) {
     const state = {
       includeTags: new Set(),
       excludeTags: new Set(),
-      includeMode: 'or', // 'or' | 'and' — only matters with 2+ include tags
+      includeMode: 'or',
       onlyLiked: false,
-      onlyExcluded: false, // review mode: browse only excluded words
+      onlyExcluded: false,
+      hideTagged: false,
+      multiTagged: false,
     };
-    let lastPick = null; // re-rendered in place when its tags/like/excluded change
+    const pool = () => poolWithMeta(this.plugin.personalDictionary);
+    const customTags = (w) => w.tags.filter((t) => t !== (w.theme || 'Untagged'));
+    const filtered = () => filterPool(pool(), state).filter((w) => {
+      const n = customTags(w).length;
+      if (state.hideTagged && n > 0) return false;
+      if (state.multiTagged && n < 2) return false;
+      return true;
+    });
+    const allTags = () => allTagsFromPool(pool());
+    const tagsByFrequency = () => {
+      const counts = new Map();
+      pool().forEach((w) => customTags(w).forEach((t) => counts.set(t, (counts.get(t) || 0) + 1)));
+      return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+    };
 
-    const quickRow = wrap.createDiv({ cls: 'pn-random-quickrow' });
-    const likedPill = quickRow.createEl('button', { cls: 'pn-tag-pill', text: '♥ Liked only' });
-    const reviewPill = quickRow.createEl('button', { cls: 'pn-tag-pill', text: '🚫 Review excluded' });
+    let statsDiv = null;
+    let counterEl = null;
 
-    const includeDetails = wrap.createEl('details', { cls: 'pn-random-filters' });
-    includeDetails.createEl('summary', { text: 'Filter by tag' });
-    const includeModeRow = includeDetails.createDiv({ cls: 'pn-tag-mode-row' });
-    const includeModeBtn = includeModeRow.createEl('button', { cls: 'pn-tag-pill', text: 'Match: any (OR)' });
-    const includePillsRow = includeDetails.createDiv({ cls: 'pn-tag-pills-row' });
+    const filtersDiv = panel.createDiv({ cls: 'pn-hasard-filtres' });
+    const banner = filtersDiv.createDiv({ cls: 'pn-hasard-bandeau' });
+    banner.createDiv({ cls: 'pn-titre', text: 'Quick draw' });
+    const quickDiv = banner.createDiv({ cls: 'pn-hasard-filtres-rapides' });
 
-    const excludeDetails = wrap.createEl('details', { cls: 'pn-random-filters' });
-    excludeDetails.createEl('summary', { text: 'Exclude tags' });
-    const excludePillsRow = excludeDetails.createDiv({ cls: 'pn-tag-pills-row' });
+    const incl = makeCollapsibleSection(filtersDiv, 'Filter by tags', 'pn-hasard-section-inclusion');
+    const inclForm = incl.body.createDiv({ cls: 'pn-hasard-ligne-form' });
+    const inclListId = 'pn-random-taglist-' + Math.random().toString(36).slice(2, 8);
+    const inclInput = inclForm.createEl('input', { attr: { type: 'text', placeholder: 'a tag (or click several pills below)…', list: inclListId } });
+    const inclDatalist = inclForm.createEl('datalist', { attr: { id: inclListId } });
+    const inclAddBtn = inclForm.createEl('button', { cls: 'pn-link-btn', text: '+ add tag' });
+    const inclAllBtn = inclForm.createEl('button', { cls: 'pn-link-btn pn-hasard-voir-tous-tags', text: 'See all tags' });
+    const andLabel = incl.body.createEl('label', { cls: 'pn-hasard-mode-et' });
+    const andCheckbox = andLabel.createEl('input', { attr: { type: 'checkbox' } });
+    andLabel.createSpan({ text: ' All checked tags (AND) rather than at least one (OR)' });
+    const inclChips = incl.body.createDiv({ cls: 'pn-hasard-filtres-chips' });
 
-    const statsLine = wrap.createDiv({ cls: 'pn-random-stats' });
-    const btn = wrap.createEl('button', { text: 'Give me a rare word', cls: 'mod-cta pn-random-btn' });
-    const result = wrap.createDiv({ cls: 'pn-random-result' });
+    const excl = makeCollapsibleSection(filtersDiv, 'Exclude tags', 'pn-hasard-section-exclusion');
+    const exclForm = excl.body.createDiv({ cls: 'pn-hasard-ligne-form' });
+    const exclListId = 'pn-random-excllist-' + Math.random().toString(36).slice(2, 8);
+    const exclInput = exclForm.createEl('input', { attr: { type: 'text', placeholder: 'a tag to exclude (or click several pills)…', list: exclListId } });
+    const exclDatalist = exclForm.createEl('datalist', { attr: { id: exclListId } });
+    const exclAddBtn = exclForm.createEl('button', { cls: 'pn-link-btn', text: '+ exclude' });
+    const exclAllBtn = exclForm.createEl('button', { cls: 'pn-link-btn pn-hasard-voir-tous-tags', text: 'See all tags to exclude' });
+    const exclChips = excl.body.createDiv({ cls: 'pn-hasard-filtres-chips' });
 
-    const currentPool = () => poolWithMeta(this.plugin.personalDictionary);
-    const currentFiltered = () => filterPool(currentPool(), state);
+    incl.setCountBadge(() => state.includeTags.size);
+    excl.setCountBadge(() => state.excludeTags.size);
 
-    const renderTagPills = (rowEl, tags, activeSet, onToggle) => {
-      rowEl.empty();
-      tags.forEach((tag) => {
-        const pill = rowEl.createEl('button', { cls: 'pn-tag-pill', text: tag });
-        if (activeSet.has(tag)) pill.addClass('pn-tag-pill-active');
-        pill.addEventListener('click', () => {
-          if (activeSet.has(tag)) activeSet.delete(tag); else activeSet.add(tag);
-          refreshFilters();
+    const inclPanel = makeAllTagsPanel(incl.body, inclAllBtn,
+      () => allTags().filter((t) => !state.includeTags.has(t)),
+      (t) => { state.includeTags.add(t); refresh(); });
+    const exclPanel = makeAllTagsPanel(excl.body, exclAllBtn,
+      () => allTags().filter((t) => !state.excludeTags.has(t)),
+      (t) => { state.excludeTags.add(t); refresh(); }, 'See all tags to exclude');
+
+    const renderQuick = () => {
+      quickDiv.empty();
+      [
+        { label: '🚫 Explore excluded', on: state.onlyExcluded, color: '#a3831f', toggle: () => { state.onlyExcluded = !state.onlyExcluded; } },
+        { label: '♥ Explore liked', on: state.onlyLiked, color: '#c2185b', toggle: () => { state.onlyLiked = !state.onlyLiked; } },
+        { label: '📭 Hide words already tagged', on: state.hideTagged, color: 'var(--text-muted)', toggle: () => { state.hideTagged = !state.hideTagged; } },
+        { label: '🏷️ Explore multi-tagged', on: state.multiTagged, color: 'var(--text-muted)', toggle: () => { state.multiTagged = !state.multiTagged; } },
+      ].forEach((q) => {
+        const b = quickDiv.createEl('button', { cls: 'pn-hasard-filtre-rapide' + (q.on ? ' pn-hasard-filtre-rapide-actif' : ''), text: q.label });
+        b.style.borderColor = q.color;
+        if (q.on) { b.style.background = q.color; b.style.color = '#fff'; } else { b.style.color = q.color; }
+        b.addEventListener('click', () => { q.toggle(); refresh(); });
+      });
+    };
+
+    const renderStats = () => {
+      if (!statsDiv) return;
+      statsDiv.empty();
+      const all = pool();
+      const excludedN = all.filter((w) => w.excluded).length;
+      const likedN = all.filter((w) => w.liked).length;
+      const untagged = all.filter((w) => customTags(w).length === 0).length;
+      const item = (text, cls) => statsDiv.createSpan({ cls: 'pn-hasard-stat ' + cls, text });
+      item(`${all.length} word(s) in total`, 'pn-hasard-stat-total');
+      item(`${excludedN} excluded`, 'pn-hasard-stat-exclus');
+      item(`${untagged} without a tag`, 'pn-hasard-stat-sanstag');
+      item(`${likedN} liked`, 'pn-hasard-stat-vu');
+      const counts = new Map();
+      all.forEach((w) => customTags(w).forEach((t) => counts.set(t, (counts.get(t) || 0) + 1)));
+      if (counts.size) {
+        const detail = statsDiv.createDiv({ cls: 'pn-hasard-stats-detail' });
+        const bloc = detail.createDiv({ cls: 'pn-hasard-stats-bloc' });
+        bloc.createDiv({ cls: 'pn-titre', text: 'By tag' });
+        const list = bloc.createDiv({ cls: 'pn-hasard-stats-liste' });
+        [...counts.entries()].sort((a, b) => b[1] - a[1]).forEach(([t, n]) => {
+          const chip = list.createSpan({ cls: 'pn-hasard-stats-chip', text: `${t} · ${n}` });
+          const c = tagColor(t);
+          chip.style.borderColor = c; chip.style.color = c;
         });
+      }
+    };
+
+    const refresh = () => {
+      state.includeMode = andCheckbox.checked ? 'and' : 'or';
+      renderQuick();
+      renderStats();
+      incl.render();
+      excl.render();
+      const tags = allTags();
+      inclDatalist.empty();
+      exclDatalist.empty();
+      tags.forEach((t) => {
+        if (!state.includeTags.has(t)) inclDatalist.createEl('option', { attr: { value: t } });
+        if (!state.excludeTags.has(t)) exclDatalist.createEl('option', { attr: { value: t } });
       });
+      inclPanel.render();
+      exclPanel.render();
+      inclChips.empty();
+      if (state.includeTags.size) {
+        inclChips.createSpan({ cls: 'pn-sources-label', text: 'Active filters: ' });
+        [...state.includeTags].forEach((t) => makeTagChip(inclChips, t, () => { state.includeTags.delete(t); refresh(); }));
+      }
+      exclChips.empty();
+      if (state.excludeTags.size) {
+        exclChips.createSpan({ cls: 'pn-sources-label', text: 'Excluded: ' });
+        [...state.excludeTags].forEach((t) => makeTagChip(exclChips, t, () => { state.excludeTags.delete(t); refresh(); }));
+      }
+      if (counterEl) {
+        const n = filtered().length;
+        counterEl.setText(n === 0 ? 'No word matches these filters' : `${n} word${n > 1 ? 's' : ''} match${n > 1 ? '' : 'es'} these filters`);
+      }
+      if (current) renderPresets();
     };
 
-    const refreshFilters = () => {
-      const pool = currentPool();
-      const tags = allTagsFromPool(pool);
-      renderTagPills(includePillsRow, tags, state.includeTags, refreshFilters);
-      renderTagPills(excludePillsRow, tags, state.excludeTags, refreshFilters);
-      includeModeBtn.setText(state.includeMode === 'and' ? 'Match: all (AND)' : 'Match: any (OR)');
-      includeModeRow.style.display = state.includeTags.size > 1 ? 'block' : 'none';
-      likedPill.toggleClass('pn-tag-pill-active', state.onlyLiked);
-      reviewPill.toggleClass('pn-tag-pill-active', state.onlyExcluded);
-      const n = currentFiltered().length;
-      statsLine.setText(`${n} word${n === 1 ? '' : 's'} match${n === 1 ? 'es' : ''} the current filters (${pool.length} total).`);
+    const addFrom = (input, set) => {
+      const t = input.value.trim();
+      if (!t) return;
+      set.add(t);
+      input.value = '';
+      refresh();
+    };
+    inclAddBtn.addEventListener('click', () => addFrom(inclInput, state.includeTags));
+    inclInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addFrom(inclInput, state.includeTags); } });
+    exclAddBtn.addEventListener('click', () => addFrom(exclInput, state.excludeTags));
+    exclInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addFrom(exclInput, state.excludeTags); } });
+    andCheckbox.addEventListener('change', refresh);
+
+    // ---- draw zone ----
+    const zone = panel.createDiv({ cls: 'pn-hasard-zone' });
+    counterEl = zone.createDiv({ cls: 'pn-hasard-compteur-pool' });
+    const drawWrap = zone.createDiv({ cls: 'pn-hasard-bouton-wrap' });
+    const drawBtn = drawWrap.createEl('button', { cls: 'pn-hasard-bouton', text: '🎲 Draw a random word' });
+    const wordEl = zone.createDiv({ cls: 'pn-hasard-mot' });
+    const noteEl = zone.createDiv({ cls: 'pn-hasard-note' });
+    const chipsDiv = zone.createDiv({ cls: 'pn-hasard-tags' });
+    const actions = zone.createDiv({ cls: 'pn-hasard-actions' });
+    actions.style.display = 'none';
+    const defsBtn = actions.createEl('button', { cls: 'pn-link-btn', text: 'See its definition →' });
+    const rhymesBtn = actions.createEl('button', { cls: 'pn-link-btn', text: 'Find its rhymes →' });
+    const likeBtn = actions.createEl('button', { cls: 'pn-link-btn' });
+    const excludeBtn = actions.createEl('button', { cls: 'pn-link-btn pn-btn-exclure' });
+    const presetsDiv = zone.createDiv({ cls: 'pn-hasard-tag-presets' });
+    presetsDiv.style.display = 'none';
+    const allTagsBtn = zone.createEl('button', { cls: 'pn-link-btn pn-hasard-voir-tous-tags', text: 'See all tags' });
+    allTagsBtn.style.display = 'none';
+    const tagForm = zone.createDiv({ cls: 'pn-hasard-tag-ajout' });
+    tagForm.style.display = 'none';
+    const tagListId = 'pn-random-tagadd-' + Math.random().toString(36).slice(2, 8);
+    const tagInput = tagForm.createEl('input', { attr: { type: 'text', placeholder: 'add a tag (e.g. archaic)', list: tagListId } });
+    const tagDatalist = tagForm.createEl('datalist', { attr: { id: tagListId } });
+    const tagAddBtn = tagForm.createEl('button', { cls: 'pn-link-btn', text: '+ tag' });
+
+    let current = null; // pool entry currently shown
+
+    const reloadCurrent = () => {
+      if (!current) return;
+      const fresh = pool().find((w) => w.word.toLowerCase() === current.word.toLowerCase());
+      if (fresh) current = fresh;
+    };
+    const addTag = async (t) => {
+      if (!current || !t) return;
+      await this.plugin.addWordTag(current.word, t);
+      reloadCurrent(); renderCurrent(); refresh();
+    };
+    const allTagsPanel = makeAllTagsPanel(zone, allTagsBtn, () => {
+      const all = tagsByFrequency();
+      return all.length > 6 ? [...all].sort() : [];
+    }, addTag);
+    const renderPresets = () => {
+      presetsDiv.empty();
+      const top = tagsByFrequency().filter((t) => !customTags(current).includes(t)).slice(0, 6);
+      presetsDiv.style.display = top.length ? 'flex' : 'none';
+      top.forEach((t) => {
+        const b = presetsDiv.createEl('button', { cls: 'pn-hasard-preset-btn', text: '+ ' + t });
+        const c = tagColor(t);
+        b.style.borderColor = c; b.style.color = c;
+        b.addEventListener('click', () => addTag(t));
+      });
+      allTagsPanel.render();
+      tagDatalist.empty();
+      allTags().forEach((t) => tagDatalist.createEl('option', { attr: { value: t } }));
     };
 
-    likedPill.addEventListener('click', () => { state.onlyLiked = !state.onlyLiked; refreshFilters(); });
-    reviewPill.addEventListener('click', () => { state.onlyExcluded = !state.onlyExcluded; refreshFilters(); });
-    includeModeBtn.addEventListener('click', () => {
-      state.includeMode = state.includeMode === 'and' ? 'or' : 'and';
-      refreshFilters();
+    const renderCurrent = () => {
+      if (!current) return;
+      wordEl.setText(current.word);
+      noteEl.empty();
+      if (current.note) noteEl.createDiv({ cls: 'pn-hasard-note-partie', text: current.note });
+      chipsDiv.empty();
+      const theme = current.theme || 'Untagged';
+      const themeChip = chipsDiv.createSpan({ cls: 'pn-tag-chip', text: theme });
+      themeChip.setAttr('title', 'Theme (always a tag)');
+      customTags(current).forEach((t) => makeTagChip(chipsDiv, t, async () => {
+        await this.plugin.removeWordTag(current.word, t);
+        reloadCurrent(); renderCurrent(); refresh();
+      }));
+      likeBtn.setText(current.liked ? '♥ Liked (undo)' : '♡ Like');
+      excludeBtn.setText(current.excluded ? '↩ Draw this word again' : '🚫 Stop drawing this word');
+      actions.style.display = 'flex';
+      tagForm.style.display = 'flex';
+      renderPresets();
+    };
+
+    const draw = () => {
+      const list = filtered();
+      if (list.length === 0) {
+        current = null;
+        wordEl.setText('No word available with these filters.');
+        noteEl.empty(); chipsDiv.empty(); presetsDiv.empty();
+        presetsDiv.style.display = 'none';
+        actions.style.display = 'none';
+        tagForm.style.display = 'none';
+        allTagsBtn.style.display = 'none';
+        return;
+      }
+      current = list[Math.floor(Math.random() * list.length)];
+      renderCurrent();
+    };
+
+    drawBtn.addEventListener('click', draw);
+    defsBtn.addEventListener('click', () => {
+      if (!current) return;
+      this.switchTab('definitions');
+      if (this._prefillDefinitions) this._prefillDefinitions(current.word);
+    });
+    rhymesBtn.addEventListener('click', () => {
+      if (!current) return;
+      this.switchTab('rhymes');
+      if (this._prefillRhymes) this._prefillRhymes(current.word);
+    });
+    likeBtn.addEventListener('click', async () => {
+      if (!current) return;
+      await this.plugin.toggleWordLiked(current.word);
+      reloadCurrent(); renderCurrent(); refresh();
+    });
+    excludeBtn.addEventListener('click', async () => {
+      if (!current) return;
+      const wasExcluded = current.excluded;
+      await this.plugin.toggleWordExcluded(current.word);
+      if (!wasExcluded) { new Notice(`"${current.word}" won't be drawn anymore.`); refresh(); draw(); return; }
+      reloadCurrent(); renderCurrent(); refresh();
+    });
+    tagAddBtn.addEventListener('click', async () => { await addTag(tagInput.value.trim()); tagInput.value = ''; });
+    tagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tagAddBtn.click(); });
+
+    // ---- add a rare word by hand ----
+    const addDetails = panel.createEl('details', { cls: 'pn-hasard-ajout' });
+    addDetails.createEl('summary', { text: '+ Add a rare word by hand' });
+    const addForm = addDetails.createDiv({ cls: 'pn-hasard-ajout-form' });
+    const inWord = addForm.createEl('input', { attr: { type: 'text', placeholder: 'word' } });
+    const inNote = addForm.createEl('input', { attr: { type: 'text', placeholder: 'short definition (optional)' } });
+    const inTags = addForm.createEl('input', { attr: { type: 'text', placeholder: 'tags, comma-separated (optional)' } });
+    const addWordBtn = addForm.createEl('button', { cls: 'pn-link-btn', text: 'Add to my personal dictionary' });
+    addWordBtn.addEventListener('click', async () => {
+      const w = inWord.value.trim();
+      if (!w) { new Notice('A word is required.'); return; }
+      const tags = inTags.value.split(',').map((t) => t.trim()).filter(Boolean);
+      if (!(await this.plugin.addRareWord(w, inNote.value.trim(), tags))) return;
+      inWord.value = ''; inNote.value = ''; inTags.value = '';
+      refresh();
     });
 
-    const renderCard = (pick) => {
-      lastPick = pick;
-      result.empty();
-      const card = result.createDiv({ cls: 'pn-rhyme-section pn-rhyme-perfect pn-random-card' });
-      card.createEl('h2', { text: pick.word });
-      card.createDiv({ cls: 'pn-random-note', text: pick.note });
+    // ---- statistics ----
+    const statsDetails = panel.createEl('details', { cls: 'pn-hasard-stats-details' });
+    statsDetails.createEl('summary', { text: 'Show statistics' });
+    statsDiv = statsDetails.createDiv({ cls: 'pn-hasard-stats' });
+    statsDetails.addEventListener('toggle', () => { if (statsDetails.open) renderStats(); });
 
-      const tagsRow = card.createDiv({ cls: 'pn-random-tags' });
-      pick.tags.forEach((tag) => {
-        const isTheme = tag === pick.theme;
-        const chip = tagsRow.createSpan({ cls: 'pn-tag-chip' + (isTheme ? ' pn-tag-chip-theme' : ''), text: tag });
-        if (!isTheme) {
-          const remove = chip.createSpan({ cls: 'pn-tag-chip-remove', text: ' ✕' });
-          remove.addEventListener('click', async () => {
-            await this.plugin.removeWordTag(pick.word, tag);
-            renderCard({ ...pick, tags: pick.tags.filter((t) => t !== tag) });
-            refreshFilters();
-          });
-        }
-      });
-      const addTagRow = card.createDiv({ cls: 'pn-random-add-tag' });
-      const addTagInput = addTagRow.createEl('input', { attr: { type: 'text', placeholder: 'Add a tag…' } });
-      const addTagBtn = addTagRow.createEl('button', { cls: 'pn-icon-btn', text: '+' });
-      const doAddTag = async () => {
-        const t = addTagInput.value.trim();
-        if (!t) return;
-        await this.plugin.addWordTag(pick.word, t);
-        addTagInput.value = '';
-        renderCard({ ...pick, tags: Array.from(new Set([...pick.tags, t])) });
-        refreshFilters();
-      };
-      addTagBtn.addEventListener('click', doAddTag);
-      addTagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doAddTag(); });
-
-      const statusRow = card.createDiv({ cls: 'pn-random-status-row' });
-      const likeBtn = statusRow.createEl('button', { cls: 'pn-tag-pill' + (pick.liked ? ' pn-tag-pill-active' : ''), text: '♥ Liked' });
-      likeBtn.addEventListener('click', async () => {
-        const liked = await this.plugin.toggleWordLiked(pick.word);
-        renderCard({ ...pick, liked });
-        refreshFilters();
-      });
-      const excludeBtn = statusRow.createEl('button', { cls: 'pn-tag-pill' + (pick.excluded ? ' pn-tag-pill-active' : ''), text: '🚫 Exclude from draws' });
-      excludeBtn.addEventListener('click', async () => {
-        const excluded = await this.plugin.toggleWordExcluded(pick.word);
-        renderCard({ ...pick, excluded });
-        refreshFilters();
-      });
-
-      const linkRow = card.createDiv({ cls: 'pn-random-links' });
-      const defLink = linkRow.createEl('a', { text: 'Look up in Definitions →', attr: { href: '#' } });
-      defLink.addEventListener('click', (evt) => {
-        evt.preventDefault();
-        this.activeTab = 'definitions';
-        this.render();
-        setTimeout(() => {
-          const input = this.containerEl.querySelector('.pn-definitions-tab .pn-rhyme-input');
-          if (input) { input.value = pick.word; input.focus(); }
-        }, 0);
-      });
-      const rhymeLink = linkRow.createEl('a', { text: 'Find rhymes →', attr: { href: '#' } });
-      rhymeLink.addEventListener('click', (evt) => {
-        evt.preventDefault();
-        this.activeTab = 'rhymes';
-        this.render();
-        setTimeout(() => {
-          const input = this.containerEl.querySelector('.pn-rhymes-tab .pn-rhyme-input');
-          if (input) { input.value = pick.word; input.focus(); }
-        }, 0);
-      });
-    };
-
-    btn.addEventListener('click', () => {
-      const pool = currentFiltered();
-      if (pool.length === 0) { result.empty(); result.setText('No word matches the current filters.'); return; }
-      const pick = pool[Math.floor(Math.random() * pool.length)];
-      renderCard(pick);
-    });
-
-    refreshFilters();
+    refresh();
+    draw();
   }

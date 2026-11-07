@@ -153,6 +153,61 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
     return entry.excluded;
   }
 
+  // Rare word (Random tab form, Inspiration selection). Updates the note
+  // and merges tags if the word is already there. Returns true on success.
+  async addRareWord(word, note, tags, opts) {
+    const w = (word || '').trim();
+    if (!w) return false;
+    const d = this.personalDictionary;
+    if (!Array.isArray(d.rareWords)) d.rareWords = [];
+    const i = d.rareWords.findIndex((e) => normalizeWordKey(typeof e === 'string' ? e : e && e.word) === normalizeWordKey(w));
+    if (i >= 0) {
+      const e = typeof d.rareWords[i] === 'string' ? { word: d.rareWords[i] } : d.rareWords[i];
+      if (note && !e.note) e.note = note;
+      d.rareWords[i] = e;
+    } else {
+      d.rareWords.push(note ? { word: w, note } : { word: w });
+    }
+    for (const t of (tags || [])) this._ensureWordMetaEntry(w).tags.includes(t) || this._ensureWordMetaEntry(w).tags.push(t);
+    const ok = await this.savePersonalDictionary();
+    if (!(opts && opts.quiet)) new Notice(ok ? `"${w}" added to your personal dictionary.` : 'Could not save — see console.');
+    return ok;
+  }
+
+  // Adds words to a personal vocabulary theme, creating it (with the given
+  // trigger words) if needed. Returns how many words were new.
+  async addThemeWords(theme, triggers, words) {
+    const d = this.personalDictionary;
+    if (!Array.isArray(d.vocabularyThemes)) d.vocabularyThemes = [];
+    let t = d.vocabularyThemes.find((x) => x && (x.theme || '').toLowerCase() === theme.toLowerCase());
+    if (!t) {
+      t = { theme, triggers: triggers.length ? triggers : [theme.toLowerCase()], words: [] };
+      d.vocabularyThemes.push(t);
+    } else if (triggers.length) {
+      t.triggers = Array.from(new Set([...(t.triggers || []), ...triggers]));
+    }
+    if (!Array.isArray(t.words)) t.words = [];
+    const have = new Set(t.words.map((e) => normalizeWordKey(typeof e === 'string' ? e : e && e.word)));
+    let n = 0;
+    for (const { word, note } of words) {
+      if (have.has(normalizeWordKey(word))) continue;
+      t.words.push(note ? { word, note } : { word });
+      have.add(normalizeWordKey(word));
+      n++;
+    }
+    await this.savePersonalDictionary();
+    return n;
+  }
+
+  // Remembers which online sources are ticked, per tab ('rhymes',
+  // 'inspiration', 'synonyms'), like the French plugin does.
+  async setOnlineSource(kind, on) {
+    const set = new Set(this.settings.onlineSources || []);
+    if (on) set.add(kind); else set.delete(kind);
+    this.settings.onlineSources = [...set];
+    await this.saveSettings();
+  }
+
   async addSynonymToPersonalDictionary(word, synonym) {
     return this._addWordRelation('synonyms', word, synonym);
   }

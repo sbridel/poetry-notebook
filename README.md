@@ -42,6 +42,17 @@ came from.
 Flip the card ("🔄 Sonorities" button, top-left) to switch to the sound-pattern
 panel described below.
 
+Above the draft, the action bar offers **Export** (copies the analysis as a
+Markdown table), **Copy**, **Active note** (loads the selection in the open
+note, else its first ```` ```poem ```` block, else the whole note, with
+frontmatter and Markdown syntax stripped) and **Clear**. Each line shows its
+rhyme letter, its meter spelled out ("iambic trimeter") and its syllable
+count. Stanzas are separated by blank lines: below the lines, one row per
+stanza gives its rhyme scheme and names the common ones (couplets AABB, cross
+rhyme ABAB, enclosed rhyme ABBA). **Continuous rhymes across stanzas** (on by
+default) carries the letters on from one stanza to the next; off, each stanza
+restarts at A.
+
 ### Rhymes
 Search CMUdict for perfect rhymes (matching stressed vowel and everything
 after it) and near/slant rhymes (consonance or assonance), grouped by
@@ -81,6 +92,15 @@ definition; it's tracked separately. Filter the draw pool by included tags
 a "liked only" quick filter, or a "review excluded" mode to revisit what
 you've set aside — with a live count of how many words match the current
 filters.
+
+### Layout
+Every tab follows the same layout as the French sibling plugin, Carnet du
+Poète: framed filter boxes, a "complete online" box whose ticked sources are
+remembered, and results in collapsible blocks, one per source (personal or
+built-in data first, then each online source). Online word lists can be
+clicked to leave a word out before saving them to your personal dictionary.
+In Inspiration, clicking words builds a selection (kept across searches)
+that can be added to a personal theme or as rare words.
 
 ### Notes
 Lists the words in your personal dictionary that have no note yet —
@@ -252,7 +272,9 @@ node build.js
 ```
 
 Edit the files in `src/`, never `main.js` directly. `styles.css` stays at
-the repository root. A GitHub workflow (`.github/workflows/release.yml`)
+the repository root; its first section is generated from Carnet du Poète's
+stylesheet with the `cp-` prefix renamed `pn-` (the command is in the file's
+header), so both plugins share one look without their classes colliding. A GitHub workflow (`.github/workflows/release.yml`)
 publishes a release automatically when a push to `main` carries a
 `manifest.json` version that has no tag yet, using that version's entry
 in the changelog below as release notes.

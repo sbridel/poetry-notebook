@@ -12,12 +12,11 @@ class RhymeModal extends Modal {
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass('pn-modal');
+    contentEl.addClass('poets-notebook-view');
     contentEl.createEl('h3', { text: `Rhymes for "${this.word}"` });
-    const results = contentEl.createDiv({ cls: 'pn-rhyme-results' });
-    PoetsNotebookView.prototype.runRhymeSearch.call(
-      { plugin: this.plugin, renderRhymeGroup: PoetsNotebookView.prototype.renderRhymeGroup },
-      this.word, { letter: '', syllables: null, includeDatamuse: false }, results
+    const results = contentEl.createDiv({ cls: 'pn-resultats' });
+    PoetsNotebookView.prototype.renderRhymeResults.call(
+      { plugin: this.plugin }, results, this.word, { online: false }
     );
   }
   onClose() { this.contentEl.empty(); }
@@ -31,11 +30,11 @@ class InspirationModal extends Modal {
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass('pn-modal');
+    contentEl.addClass('poets-notebook-view');
     contentEl.createEl('h3', { text: `Inspiration around "${this.word}"` });
-    const results = contentEl.createDiv({ cls: 'pn-rhyme-results' });
+    const results = contentEl.createDiv({ cls: 'pn-resultats' });
     PoetsNotebookView.prototype.renderInspirationResults.call(
-      { plugin: this.plugin }, results, this.word, false
+      { plugin: this.plugin }, results, this.word, false, null
     );
   }
   onClose() { this.contentEl.empty(); }

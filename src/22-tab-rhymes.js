@@ -1,131 +1,124 @@
-  renderRhymesTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-rhymes-tab' });
+  // ---- Rhymes tab ----
+  // Same structure as the French Rimes tab: search form, a framed filter
+  // box (letter / syllables, rhyme type), a framed "complete online" box,
+  // then one collapsible block per source.
+  renderRhymesTab(panel) {
+    const form = panel.createDiv({ cls: 'pn-rime-form' });
+    const wordInput = form.createEl('input', { attr: { type: 'text', placeholder: 'A word… (e.g. light, river, courage)' } });
+    const searchBtn = form.createEl('button', { text: 'Search' });
 
-    const searchRow = wrap.createDiv({ cls: 'pn-rhyme-search-row' });
-    const wordInput = searchRow.createEl('input', {
-      cls: 'pn-rhyme-input',
-      attr: { type: 'text', placeholder: 'Word to rhyme with…' },
-    });
-    const searchBtn = searchRow.createEl('button', { text: 'Search', cls: 'mod-cta' });
+    const filtersBox = panel.createDiv({ cls: 'pn-boite pn-filtres' });
+    const lineLetter = filtersBox.createDiv({ cls: 'pn-filtres-ligne' });
+    lineLetter.createSpan({ cls: 'pn-filtres-ligne-label', text: 'Letter / syllables: ' });
+    const letterInput = lineLetter.createEl('input', { cls: 'pn-filtre-lettre', attr: { type: 'text', maxlength: '3', placeholder: 'Letter' } });
+    const syllSelect = makeSyllableSelect(lineLetter);
+    filtersBox.createDiv({ cls: 'pn-filtres-separateur' });
+    const lineType = filtersBox.createDiv({ cls: 'pn-filtres-ligne' });
+    lineType.createSpan({ cls: 'pn-filtres-ligne-label', text: 'Rhyme type: ' });
+    const typeDiv = lineType.createDiv({ cls: 'pn-qualite-filtres' });
+    const perfectToggle = makeTogglePill(typeDiv, 'Perfect', true, 'Stressed vowel and everything after it match exactly (light / flight).');
+    const nearToggle = makeTogglePill(typeDiv, 'Near / slant', !this.plugin.settings.strictRhymeMode, 'Close but not identical sounds: consonance or assonance (shape / keep).');
 
-    const filtersRow = wrap.createDiv({ cls: 'pn-rhyme-filters-row' });
-    const letterLabel = filtersRow.createEl('label', { cls: 'pn-filter-label', text: 'Starts with:' });
-    const letterInput = letterLabel.createEl('input', {
-      cls: 'pn-rhyme-filter-input',
-      attr: { type: 'text', maxlength: '3', placeholder: 'any' },
-    });
-    const syllLabel = filtersRow.createEl('label', { cls: 'pn-filter-label', text: 'Syllables:' });
-    const syllInput = syllLabel.createEl('input', {
-      cls: 'pn-rhyme-filter-input',
-      attr: { type: 'number', min: '1', placeholder: 'any' },
-    });
-
-    const optionsRow = wrap.createDiv({ cls: 'pn-options-row' });
-    const datamuseLabel = optionsRow.createEl('label', { cls: 'pn-checkbox-label' });
-    const datamuseCheckbox = datamuseLabel.createEl('input', { attr: { type: 'checkbox' } });
-    datamuseLabel.appendText(' Include Datamuse (online)');
-
-    const rhymezoneLink = optionsRow.createEl('a', {
-      cls: 'pn-external-link',
-      text: 'Open in RhymeZone ↗',
-      attr: { href: '#' },
-    });
+    const sourcesBox = panel.createDiv({ cls: 'pn-boite pn-sources' });
+    sourcesBox.createSpan({ cls: 'pn-sources-label', text: 'Complete online: ' });
+    const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse', (this.plugin.settings.onlineSources || []).includes('rhymes'),
+      'Adds Datamuse matches not already found in CMUdict.');
+    const rhymezoneLink = sourcesBox.createEl('a', { cls: 'pn-inspi-lien', text: 'RhymeZone ↗', attr: { href: '#' } });
+    rhymezoneLink.setAttr('title', "Open the word on RhymeZone for its own advanced filters");
     rhymezoneLink.addEventListener('click', (evt) => {
       evt.preventDefault();
       const w = wordInput.value.trim();
-      if (!w) return;
-      window.open(`https://www.rhymezone.com/r/rhyme.cgi?Word=${encodeURIComponent(w)}&typeofrhyme=perfect`, '_blank');
+      if (w) window.open(`https://www.rhymezone.com/r/rhyme.cgi?Word=${encodeURIComponent(w)}&typeofrhyme=perfect`, '_blank');
     });
 
-    const results = wrap.createDiv({ cls: 'pn-rhyme-results' });
+    const results = panel.createDiv({ cls: 'pn-resultats' });
 
-    const doSearch = () => {
-      const word = wordInput.value.trim();
-      if (!word) return;
-      this.runRhymeSearch(word, {
-        letter: letterInput.value.trim(),
-        syllables: syllInput.value ? Number(syllInput.value) : null,
-        includeDatamuse: datamuseCheckbox.checked,
-      }, results);
-    };
+    const doSearch = () => this.renderRhymeResults(results, wordInput.value, {
+      letter: letterInput.value.trim(),
+      syllables: syllSelect.value,
+      perfect: perfectToggle.checked,
+      near: nearToggle.checked,
+      online: datamuseToggle.checked,
+    });
 
     searchBtn.addEventListener('click', doSearch);
     wordInput.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') doSearch(); });
-  }
-
-  renderRhymeGroup(container, title, items, cls) {
-    if (!items || items.length === 0) return;
-    const section = container.createDiv({ cls: `pn-rhyme-section ${cls || ''}` });
-    section.createEl('h4', { text: `${title} (${items.length})` });
-
-    const bySyllables = new Map();
-    for (const item of items) {
-      const n = item.syllableCount || 0;
-      if (!bySyllables.has(n)) bySyllables.set(n, []);
-      bySyllables.get(n).push(item.word);
-    }
-    const syllableCounts = [...bySyllables.keys()].sort((a, b) => a - b);
-    for (const n of syllableCounts) {
-      const row = section.createDiv({ cls: 'pn-rhyme-syll-group' });
-      row.createSpan({ cls: 'pn-rhyme-syll-label', text: n ? `${n} syll.:` : '?:' });
-      row.createSpan({ cls: 'pn-rhyme-word-list', text: bySyllables.get(n).join(', ') });
-    }
-  }
-
-  async runRhymeSearch(word, options, resultsEl) {
-    resultsEl.empty();
-
-    if (!this.plugin.cmudictIndex) {
-      resultsEl.createDiv({ cls: 'pn-banner', text: 'CMUdict not loaded — rhyme search needs it. See the banner above.' });
-      return;
-    }
-
-    const local = searchLocalRhymes(word, this.plugin.cmudictIndex, {
-      letter: options.letter,
-      syllables: options.syllables,
+    letterInput.addEventListener('input', doSearch);
+    syllSelect.addEventListener('change', doSearch);
+    perfectToggle.addEventListener('change', doSearch);
+    nearToggle.addEventListener('change', doSearch);
+    datamuseToggle.addEventListener('change', async () => {
+      await this.plugin.setOnlineSource('rhymes', datamuseToggle.checked);
+      doSearch();
     });
 
-    if (!local) {
-      resultsEl.createDiv({ text: `"${word}" wasn't found in CMUdict, so I can't work out its rhyme sound. Try a different spelling.` });
-      return;
-    }
-
-    this.renderRhymeGroup(resultsEl, 'Perfect rhymes', local.perfect, 'pn-rhyme-perfect');
-
-    if (!this.plugin.settings.strictRhymeMode) {
-      this.renderRhymeGroup(resultsEl, 'Near / slant rhymes', local.near, 'pn-rhyme-near');
-    }
-
-    if (local.perfect.length === 0 && local.near.length === 0) {
-      resultsEl.createDiv({ text: 'No rhymes found in CMUdict for this word with the current filters.' });
-    }
-
-    if (options.includeDatamuse) {
-      const loading = resultsEl.createDiv({ cls: 'pn-rhyme-loading', text: 'Querying Datamuse…' });
-      try {
-        const [perfect, near] = await Promise.all([
-          fetchDatamuseRhymes(word, false),
-          this.plugin.settings.strictRhymeMode ? Promise.resolve([]) : fetchDatamuseRhymes(word, true),
-        ]);
-        loading.remove();
-        const localWords = new Set([...local.perfect, ...local.near].map((w) => w.word));
-        const extraPerfect = perfect.filter((d) => !localWords.has(d.word.toLowerCase()));
-        const extraNear = near.filter((d) => !localWords.has(d.word.toLowerCase()));
-        this.renderRhymeGroup(
-          resultsEl, 'Online — Datamuse (perfect, not already listed above)',
-          extraPerfect.map((d) => ({ word: d.word, syllableCount: d.numSyllables || 0 })),
-          'pn-rhyme-online'
-        );
-        if (!this.plugin.settings.strictRhymeMode) {
-          this.renderRhymeGroup(
-            resultsEl, 'Online — Datamuse (near, not already listed above)',
-            extraNear.map((d) => ({ word: d.word, syllableCount: d.numSyllables || 0 })),
-            'pn-rhyme-online'
-          );
-        }
-      } catch (e) {
-        loading.setText('Datamuse request failed (offline, or the API is unavailable).');
-      }
-    }
+    this._prefillRhymes = (word) => { wordInput.value = word; doSearch(); };
   }
 
+  // Shared by the Rhymes tab and the Rhymes modal (editor right-click).
+  // filters: { letter, syllables ('', '1'…'4', '5+'), perfect, near, online }.
+  async renderRhymeResults(container, rawWord, filters) {
+    container.empty();
+    const word = (rawWord || '').trim();
+    if (!word) return;
+    const f = Object.assign({ letter: '', syllables: '', perfect: true, near: true, online: false }, filters);
+    const idx = this.plugin.cmudictIndex;
+    const strict = this.plugin.settings.strictRhymeMode;
+    const showNear = f.near && !strict;
+
+    const sylMatch = (n) => {
+      if (!f.syllables) return true;
+      return f.syllables === '5+' ? n >= 5 : n === parseInt(f.syllables, 10);
+    };
+    const letterMatch = (w) => !f.letter || w.toLowerCase().startsWith(f.letter.toLowerCase());
+
+    const localBody = makeSourceBlock(container, `${word} — CMUdict`, true, true);
+    const local = idx ? searchLocalRhymes(word, idx, { letter: f.letter, syllables: null }) : null;
+    if (!idx) {
+      localBody.createEl('p', { cls: 'pn-vide', text: 'CMUdict not loaded — rhyme search needs it. See the banner above.' });
+    } else if (!local) {
+      localBody.createEl('p', { cls: 'pn-vide', text: `"${word}" wasn't found in CMUdict, so its rhyme sound is unknown. Try another spelling.` });
+    } else {
+      const perfect = f.perfect ? local.perfect.filter((r) => sylMatch(r.syllableCount)).map((r) => r.word) : [];
+      const near = showNear ? local.near.filter((r) => sylMatch(r.syllableCount)).map((r) => r.word) : [];
+      if (perfect.length === 0 && near.length === 0) {
+        localBody.createEl('p', { cls: 'pn-vide', text: 'No word matches these filters.' });
+      }
+      makeWordGroup(localBody, 'Perfect rhymes', perfect, 'pn-mot', idx);
+      if (near.length) {
+        const block = localBody.createDiv({ cls: 'pn-groupe pn-bloc-assonance' });
+        block.createDiv({ cls: 'pn-titre pn-label-assonance', text: `Near / slant rhymes (${near.length})` });
+        const words = block.createDiv({ cls: 'pn-mots' });
+        showWithLimit(words, near, (w) => makeWordChip(words, w, 'pn-mot pn-mot-assonance', idx));
+      }
+    }
+
+    if (!f.online) return;
+    const onlineBody = makeSourceBlock(container, `${word} — Datamuse`, true, false);
+    const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
+    try {
+      const [perfect, near] = await Promise.all([
+        f.perfect ? fetchDatamuseRhymes(word, false) : Promise.resolve([]),
+        showNear ? fetchDatamuseRhymes(word, true) : Promise.resolve([]),
+      ]);
+      status.remove();
+      const known = new Set(local ? [...local.perfect, ...local.near].map((r) => r.word) : []);
+      const keep = (list) => list
+        .filter((d) => !known.has(d.word.toLowerCase()) && letterMatch(d.word) && sylMatch(d.numSyllables || 0))
+        .map((d) => d.word);
+      const extraPerfect = keep(perfect);
+      const extraNear = keep(near);
+      if (extraPerfect.length === 0 && extraNear.length === 0) {
+        onlineBody.createEl('p', { cls: 'pn-vide', text: 'Nothing more than CMUdict for these filters.' });
+        return;
+      }
+      makeWordGroup(onlineBody, 'Perfect (not already listed)', extraPerfect, 'pn-mot', idx);
+      if (extraNear.length) {
+        onlineBody.createDiv({ cls: 'pn-titre pn-label-assonance', text: `Near / slant (${extraNear.length})` });
+        const words = onlineBody.createDiv({ cls: 'pn-mots' });
+        showWithLimit(words, extraNear, (w) => makeWordChip(words, w, 'pn-mot pn-mot-assonance', idx));
+      }
+    } catch (e) {
+      status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
+    }
+  }

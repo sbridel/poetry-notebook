@@ -1,138 +1,123 @@
   // ---- Synonyms tab ----
-  renderSynonymsTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-synonyms-tab' });
+  // Same structure as the French Synonymes tab: "also search online" box,
+  // search form, optional "rhymes with" / syllable filters, then one
+  // collapsible block per source. Online chips can be clicked to leave
+  // them out, then saved to the personal dictionary in one go.
+  renderSynonymsTab(panel) {
+    const sourcesBox = panel.createDiv({ cls: 'pn-sources' });
+    sourcesBox.createSpan({ cls: 'pn-sources-label', text: 'Also search online: ' });
+    const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse', (this.plugin.settings.onlineSources || []).includes('synonyms'));
 
-    const searchRow = wrap.createDiv({ cls: 'pn-rhyme-search-row' });
-    const wordInput = searchRow.createEl('input', {
-      cls: 'pn-rhyme-input',
-      attr: { type: 'text', placeholder: 'Word…' },
-    });
-    const searchBtn = searchRow.createEl('button', { text: 'Search', cls: 'mod-cta' });
+    const form = panel.createDiv({ cls: 'pn-rime-form' });
+    const wordInput = form.createEl('input', { attr: { type: 'text', placeholder: 'A word… (e.g. bright, sad, light)' } });
+    const searchBtn = form.createEl('button', { text: 'Search' });
 
-    const optionsRow = wrap.createDiv({ cls: 'pn-options-row' });
-    const datamuseLabel = optionsRow.createEl('label', { cls: 'pn-checkbox-label' });
-    const datamuseCheckbox = datamuseLabel.createEl('input', { attr: { type: 'checkbox' } });
-    datamuseLabel.appendText(' Include Datamuse (online)');
+    const filters = panel.createDiv({ cls: 'pn-filtres' });
+    const rhymeInput = filters.createEl('input', { cls: 'pn-filtre-lettre', attr: { type: 'text', placeholder: 'Rhymes with… (optional)', style: 'width:180px' } });
+    rhymeInput.setAttr('title', 'Optional: keep only the synonyms/antonyms that also rhyme with this second word — useful when another line has already fixed the rhyme.');
+    const syllSelect = makeSyllableSelect(filters);
+    syllSelect.setAttr('title', 'Keep only synonyms/antonyms with this many syllables — useful to fit a word into a given meter.');
 
-    const synPanel = this.buildRelationPanel(wrap, {
-      kind: 'synonyms',
-      label: 'Synonym',
-      fetchOnline: fetchDatamuseSynonyms,
-      addToDict: (w, s) => this.plugin.addSynonymToPersonalDictionary(w, s),
-      removeFromDict: (w, s) => this.plugin.removeSynonymFromPersonalDictionary(w, s),
-    });
-    const antPanel = this.buildRelationPanel(wrap, {
-      kind: 'antonyms',
-      label: 'Antonym',
-      fetchOnline: fetchDatamuseAntonyms,
-      addToDict: (w, s) => this.plugin.addAntonymToPersonalDictionary(w, s),
-      removeFromDict: (w, s) => this.plugin.removeAntonymFromPersonalDictionary(w, s),
-    });
-
-    const doSearch = async () => {
-      const word = wordInput.value.trim();
-      if (!word) return;
-      await Promise.all([
-        synPanel.search(word, datamuseCheckbox.checked),
-        antPanel.search(word, datamuseCheckbox.checked),
-      ]);
-    };
+    const results = panel.createDiv({ cls: 'pn-resultats' });
+    const doSearch = () => this.renderSynonymResults(results, wordInput.value, datamuseToggle.checked, rhymeInput.value, syllSelect.value);
 
     searchBtn.addEventListener('click', doSearch);
-    wordInput.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') doSearch(); });
-  }
-
-  // Builds one Synonyms- or Antonyms-shaped panel: a manual add row plus a
-  // results area (personal dictionary list with remove buttons, and an
-  // optional Datamuse section). `opts.kind` is the personal-dictionary key
-  // ('synonyms' or 'antonyms'). Returns { search(word, includeOnline) }.
-  buildRelationPanel(wrap, opts) {
-    wrap.createEl('h4', { cls: 'pn-relation-panel-title', text: opts.label + 's' });
-
-    const addRow = wrap.createDiv({ cls: 'pn-synonym-add-row' });
-    const addLabel = addRow.createSpan({ cls: 'pn-synonym-add-label', text: `${opts.label} for “…”:` });
-    const addInput = addRow.createEl('input', { cls: 'pn-rhyme-input', attr: { type: 'text' } });
-    const addBtn = addRow.createEl('button', { text: 'Save to my dictionary' });
-
-    const results = wrap.createDiv({ cls: 'pn-rhyme-results' });
-    let currentWord = '';
-
-    const renderPersonalSection = () => {
-      const key = currentWord.toLowerCase().trim();
-      const dict = this.plugin.personalDictionary[opts.kind] || {};
-      const list = dict[key] || [];
-      let section = results.querySelector('.pn-synonym-personal');
-      if (!section) {
-        section = results.createDiv({ cls: 'pn-rhyme-section pn-synonym-personal' });
-        results.prepend(section);
-      }
-      section.empty();
-      section.createEl('h4', { text: `My dictionary (${list.length})` });
-      if (list.length === 0) {
-        section.createDiv({ cls: 'pn-rhyme-word-list', text: `No ${opts.label.toLowerCase()}s saved for this word yet.` });
-      } else {
-        const listEl = section.createDiv({ cls: 'pn-rhyme-word-list' });
-        list.forEach((s) => {
-          const chip = listEl.createSpan({ cls: 'pn-synonym-chip pn-synonym-chip-saved' });
-          chip.appendText(s + ' ');
-          const removeBtn = chip.createEl('span', { cls: 'pn-synonym-remove', text: '×' });
-          removeBtn.addEventListener('click', async () => {
-            await opts.removeFromDict(currentWord, s);
-            renderPersonalSection();
-          });
-        });
-      }
-    };
-
-    const search = async (word, includeOnline) => {
-      currentWord = word;
-      addLabel.setText(`${opts.label} for “${word}”:`);
-      results.empty();
-      renderPersonalSection();
-
-      if (includeOnline) {
-        const loading = results.createDiv({ cls: 'pn-rhyme-loading', text: 'Querying Datamuse…' });
-        try {
-          const found = await opts.fetchOnline(word);
-          loading.remove();
-          const personalSet = new Set(((this.plugin.personalDictionary[opts.kind] || {})[word.toLowerCase()]) || []);
-          const extra = found.filter((s) => !personalSet.has(s.toLowerCase()) && s.toLowerCase() !== word.toLowerCase());
-          const section = results.createDiv({ cls: 'pn-rhyme-section pn-rhyme-online' });
-          section.createEl('h4', { text: `Online — Datamuse (${extra.length})` });
-          const list = section.createDiv({ cls: 'pn-rhyme-word-list' });
-          if (extra.length === 0) {
-            list.setText(`No additional ${opts.label.toLowerCase()}s found.`);
-          } else {
-            extra.forEach((s, i) => {
-              const btn = list.createEl('button', { cls: 'pn-synonym-chip', text: s });
-              btn.setAttr('title', `Click to save "${s}" into your personal dictionary`);
-              btn.addEventListener('click', async () => {
-                const res = await opts.addToDict(word, s);
-                new Notice(res.ok ? `Saved "${s}" to your dictionary` : 'Could not save — see console');
-                if (res.ok) renderPersonalSection();
-              });
-              if (i < extra.length - 1) list.appendText(' ');
-            });
-          }
-        } catch (e) {
-          loading.setText('Datamuse request failed (offline, or the API is unavailable).');
-        }
-      }
-    };
-
-    addBtn.addEventListener('click', async () => {
-      const value = addInput.value.trim();
-      if (!currentWord) { new Notice('Search a word first — the manual field only adds an entry FOR that word.'); return; }
-      if (!value) { new Notice(`Type the ${opts.label.toLowerCase()} to save.`); return; }
-      const res = await opts.addToDict(currentWord, value);
-      if (!res.ok && res.reason === 'self') {
-        new Notice(`"${value}" is the same as "${currentWord}" — a word can't be its own ${opts.label.toLowerCase()}.`);
-        return;
-      }
-      new Notice(res.ok ? `Saved "${value}" to your dictionary` : 'Could not save — see console');
-      if (res.ok) { addInput.value = ''; renderPersonalSection(); }
+    wordInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+    rhymeInput.addEventListener('input', doSearch);
+    syllSelect.addEventListener('change', doSearch);
+    datamuseToggle.addEventListener('change', async () => {
+      await this.plugin.setOnlineSource('synonyms', datamuseToggle.checked);
+      doSearch();
     });
 
-    return { search };
+    this._prefillSynonyms = (word) => { wordInput.value = word; doSearch(); };
   }
 
+  async renderSynonymResults(container, rawWord, online, rhymeTarget, syllables) {
+    container.empty();
+    const word = (rawWord || '').trim();
+    if (!word) return;
+    const key = word.toLowerCase();
+    const idx = this.plugin.cmudictIndex;
+    const target = (rhymeTarget || '').trim();
+    const applyFilters = (list) => filterBySyllables(filterByRhyme(list, target, idx), syllables, idx);
+    const rerender = () => this.renderSynonymResults(container, rawWord, online, rhymeTarget, syllables);
+
+    // ---- personal dictionary ----
+    const localBody = makeSourceBlock(container, `${word} — my dictionary`, true, true);
+    const dict = this.plugin.personalDictionary || {};
+    const syn = applyFilters((dict.synonyms || {})[key] || []);
+    const ant = applyFilters((dict.antonyms || {})[key] || []);
+    const removable = (kind) => (span, w) => {
+      const x = span.createSpan({ cls: 'pn-tag-chip-x', text: ' ×' });
+      x.setAttr('title', 'Remove from my dictionary');
+      x.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (kind === 'syno') await this.plugin.removeSynonymFromPersonalDictionary(word, w);
+        else await this.plugin.removeAntonymFromPersonalDictionary(word, w);
+        rerender();
+      });
+    };
+    if (syn.length === 0 && ant.length === 0) {
+      localBody.createEl('p', { cls: 'pn-vide', text: (target || syllables) ? 'No saved synonym/antonym matches these filters.' : 'Nothing saved for this word yet.' });
+    } else {
+      makeWordGroup(localBody, 'Synonyms', syn, 'pn-mot pn-mot-syno', idx, { type: 'syno', onChip: removable('syno') });
+      makeWordGroup(localBody, 'Antonyms', ant, 'pn-mot pn-mot-anto', idx, { type: 'anto', onChip: removable('anto') });
+    }
+    // manual entry
+    const addRow = localBody.createDiv({ cls: 'pn-hasard-ligne-form' });
+    const addInput = addRow.createEl('input', { attr: { type: 'text', placeholder: `add a word for "${word}"…` } });
+    const kindWrap = addRow.createDiv({ cls: 'pn-select-wrap' });
+    const kindSelect = kindWrap.createEl('select');
+    kindSelect.createEl('option', { attr: { value: 'syno' }, text: 'Synonym' });
+    kindSelect.createEl('option', { attr: { value: 'anto' }, text: 'Antonym' });
+    kindWrap.createSpan({ cls: 'pn-select-arrow', text: '▾' });
+    const addBtn = addRow.createEl('button', { cls: 'pn-link-btn', text: '+ save' });
+    const doAdd = async () => {
+      const value = addInput.value.trim();
+      if (!value) return;
+      const res = kindSelect.value === 'syno'
+        ? await this.plugin.addSynonymToPersonalDictionary(word, value)
+        : await this.plugin.addAntonymToPersonalDictionary(word, value);
+      if (!res.ok && res.reason === 'self') { new Notice(`"${value}" is the same as "${word}" — a word can't be its own synonym or antonym.`); return; }
+      new Notice(res.ok ? `Saved "${value}" to your dictionary.` : 'Could not save — see console.');
+      if (res.ok) rerender();
+    };
+    addBtn.addEventListener('click', doAdd);
+    addInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doAdd(); });
+
+    if (!online) return;
+
+    // ---- Datamuse ----
+    const onlineBody = makeSourceBlock(container, `${word} — Datamuse`, true, false);
+    const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
+    try {
+      const [s, a] = await Promise.all([fetchDatamuseSynonyms(word), fetchDatamuseAntonyms(word)]);
+      status.remove();
+      const savedSyn = new Set(((dict.synonyms || {})[key] || []).map((w) => w.toLowerCase()));
+      const savedAnt = new Set(((dict.antonyms || {})[key] || []).map((w) => w.toLowerCase()));
+      const synOnline = applyFilters(s.filter((w) => w.toLowerCase() !== key && !savedSyn.has(w.toLowerCase())));
+      const antOnline = applyFilters(a.filter((w) => w.toLowerCase() !== key && !savedAnt.has(w.toLowerCase())));
+      if (synOnline.length === 0 && antOnline.length === 0) {
+        onlineBody.createEl('p', { cls: 'pn-vide', text: `Nothing new found on Datamuse for "${word}".` });
+        return;
+      }
+      const exclSyn = new Set();
+      const exclAnt = new Set();
+      makeWordGroup(onlineBody, 'Synonyms', synOnline, 'pn-mot pn-mot-syno', idx, { type: 'syno', excluded: exclSyn });
+      makeWordGroup(onlineBody, 'Antonyms', antOnline, 'pn-mot pn-mot-anto', idx, { type: 'anto', excluded: exclAnt });
+      const saveBtn = onlineBody.createEl('button', { cls: 'pn-link-btn', text: '💾 Save to my personal dictionary' });
+      saveBtn.setAttr('title', 'Saves everything shown above, except the greyed/struck-through words (click a word to leave it out).');
+      saveBtn.addEventListener('click', async () => {
+        saveBtn.disabled = true;
+        saveBtn.setText('Saving…');
+        let ok = true;
+        for (const w of synOnline) if (!exclSyn.has(w)) ok = (await this.plugin.addSynonymToPersonalDictionary(word, w)).ok && ok;
+        for (const w of antOnline) if (!exclAnt.has(w)) ok = (await this.plugin.addAntonymToPersonalDictionary(word, w)).ok && ok;
+        saveBtn.setText(ok ? 'Saved ✓' : '💾 Retry saving');
+        if (!ok) saveBtn.disabled = false;
+      });
+    } catch (e) {
+      status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
+    }
+  }

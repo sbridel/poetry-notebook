@@ -10,5 +10,7 @@ const DEFAULT_SETTINGS = {
   cmudictPathOverride: '',    // optional explicit vault-relative path
   personalDictPathOverride: '', // optional explicit vault-relative path for the personal dictionary
   showRhymeColors: true,      // color the rhyme badges by group
+  continuousRhymes: true,     // rhyme letters carry on across stanzas (off = each stanza restarts at A)
+  onlineSources: [],          // tabs whose online source is ticked: 'rhymes' | 'inspiration' | 'synonyms'
 };
 

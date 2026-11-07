@@ -329,3 +329,89 @@ function detectRhymeScheme(lines, cmudictIndex) {
   return { scheme: scheme.join(''), keys };
 }
 
+
+// Whole-poem analysis: stanzas (split on blank lines), per-line analysis
+// and meter, and rhyme letters per stanza. With `continuous` false each
+// stanza restarts at A (like the French sibling's default-off option);
+// with it true, letters carry on across stanzas. Shared by the display
+// and the Markdown export.
+function nameRhymeScheme(letters) {
+  if (!letters || letters.length !== 4 || letters.some((l) => !l || l === '?')) return null;
+  const [a, b, c, d] = letters;
+  if (a === b && c === d && a !== c) return 'couplets (AABB)';
+  if (a === c && b === d && a !== b) return 'cross rhyme (ABAB)';
+  if (a === d && b === c && a !== b) return 'enclosed rhyme (ABBA)';
+  return null;
+}
+
+function analyzePoem(text, cmudictIndex, datamuseCache, continuous) {
+  const lines = text.split(/\r?\n/).map((raw) => {
+    if (!raw.trim()) return { text: raw, empty: true };
+    const a = analyzeLine(raw, cmudictIndex, datamuseCache);
+    return { text: raw, empty: false, ...a, meter: detectMeter(a.stressSeq, a.rigidSeq), letter: null, colorIdx: null };
+  });
+
+  const stanzaIdx = [];
+  let current = [];
+  lines.forEach((l, i) => {
+    if (l.empty) { if (current.length) { stanzaIdx.push(current); current = []; } }
+    else current.push(i);
+  });
+  if (current.length) stanzaIdx.push(current);
+
+  let seen = new Map();
+  let next = 0;
+  const stanzas = stanzaIdx.map((indices) => {
+    if (!continuous) { seen = new Map(); next = 0; }
+    const letters = indices.map((i) => {
+      const w = lastWordOfLine(lines[i].text);
+      const k = w ? rhymeKeyForWord(w, cmudictIndex) : null;
+      if (k === null) return '?';
+      if (!seen.has(k)) { seen.set(k, String.fromCharCode(65 + (next % 26))); next++; }
+      return seen.get(k);
+    });
+    indices.forEach((i, j) => {
+      lines[i].letter = letters[j];
+      lines[i].colorIdx = letters[j] === '?' ? null : (letters[j].charCodeAt(0) - 65);
+    });
+    return { indices, letters, name: nameRhymeScheme(letters) };
+  });
+  return { lines, stanzas };
+}
+
+// Pulls a poem out of a note: the editor selection if any, else the first
+// ```poem block, else the whole note — minus frontmatter and Markdown
+// syntax (headings, quotes/callouts, list markers, links, emphasis, HTML).
+// Mirrors the French plugin's "Note active" button.
+function extractPoemFromNote(content, selection) {
+  let text, source;
+  if (selection && selection.trim()) { text = selection; source = 'selection'; }
+  else {
+    const body = (content || '').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
+    const block = body.match(/^(`{3,}|~{3,})\s*(poem|poeme|poème)\b[^\n]*\n([\s\S]*?)^\1\s*$/mi);
+    if (block) { text = block[3]; source = 'poem block'; }
+    else { text = body; source = 'whole note'; }
+  }
+  const lines = text.replace(/\r\n?/g, '\n').split('\n').map((l) => l
+    .replace(/^\s*#{1,6}\s+/, '')
+    .replace(/^\s*(>\s*)+(\[![^\]]*\]\S*\s*)?/, '')
+    .replace(/^\s*([-*+]|\d+[.)])\s+/, '')
+    .replace(/!?\[\[([^\]|]*\|)?([^\]]*)\]\]/g, '$2')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__|\*|_|~~|==)/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+$/, ''));
+  const clean = lines.map((l) => (/^(-{3,}|\*{3,}|`{3,}.*|~{3,}.*|(#[\w/-]+\s*)+)$/.test(l.trim()) ? '' : l));
+  return { text: clean.join('\n').replace(/\n{3,}/g, '\n\n').trim(), source };
+}
+
+// Same palette as the French sibling plugin, so rhyme groups read alike.
+const RHYME_PALETTE = ['#c0392b', '#2980b9', '#27ae60', '#8e44ad', '#d68910', '#16a085', '#c2185b', '#5d4037', '#455a64', '#7f8c8d'];
+
+// "trimeter iambic" → "iambic trimeter" for display.
+function meterLabel(meter) {
+  if (!meter || !meter.name) return null;
+  if (meter.confidence === 'none') return 'irregular';
+  const m = meter.name.match(/^(\S+) (iambic|trochaic|anapestic|dactylic)(.*)$/);
+  return m ? `${m[2]} ${m[1]}${m[3]}` : meter.name;
+}

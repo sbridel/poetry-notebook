@@ -10,6 +10,8 @@ const DEFAULT_SETTINGS = {
   cmudictPathOverride: '',    // optional explicit vault-relative path
   personalDictPathOverride: '', // optional explicit vault-relative path for the personal dictionary
   showRhymeColors: true,      // color the rhyme badges by group
+  continuousRhymes: true,     // rhyme letters carry on across stanzas (off = each stanza restarts at A)
+  onlineSources: [],          // tabs whose online source is ticked: 'rhymes' | 'inspiration' | 'synonyms'
 };
 
 // ============================================================
@@ -343,6 +345,92 @@ function detectRhymeScheme(lines, cmudictIndex) {
   return { scheme: scheme.join(''), keys };
 }
 
+
+// Whole-poem analysis: stanzas (split on blank lines), per-line analysis
+// and meter, and rhyme letters per stanza. With `continuous` false each
+// stanza restarts at A (like the French sibling's default-off option);
+// with it true, letters carry on across stanzas. Shared by the display
+// and the Markdown export.
+function nameRhymeScheme(letters) {
+  if (!letters || letters.length !== 4 || letters.some((l) => !l || l === '?')) return null;
+  const [a, b, c, d] = letters;
+  if (a === b && c === d && a !== c) return 'couplets (AABB)';
+  if (a === c && b === d && a !== b) return 'cross rhyme (ABAB)';
+  if (a === d && b === c && a !== b) return 'enclosed rhyme (ABBA)';
+  return null;
+}
+
+function analyzePoem(text, cmudictIndex, datamuseCache, continuous) {
+  const lines = text.split(/\r?\n/).map((raw) => {
+    if (!raw.trim()) return { text: raw, empty: true };
+    const a = analyzeLine(raw, cmudictIndex, datamuseCache);
+    return { text: raw, empty: false, ...a, meter: detectMeter(a.stressSeq, a.rigidSeq), letter: null, colorIdx: null };
+  });
+
+  const stanzaIdx = [];
+  let current = [];
+  lines.forEach((l, i) => {
+    if (l.empty) { if (current.length) { stanzaIdx.push(current); current = []; } }
+    else current.push(i);
+  });
+  if (current.length) stanzaIdx.push(current);
+
+  let seen = new Map();
+  let next = 0;
+  const stanzas = stanzaIdx.map((indices) => {
+    if (!continuous) { seen = new Map(); next = 0; }
+    const letters = indices.map((i) => {
+      const w = lastWordOfLine(lines[i].text);
+      const k = w ? rhymeKeyForWord(w, cmudictIndex) : null;
+      if (k === null) return '?';
+      if (!seen.has(k)) { seen.set(k, String.fromCharCode(65 + (next % 26))); next++; }
+      return seen.get(k);
+    });
+    indices.forEach((i, j) => {
+      lines[i].letter = letters[j];
+      lines[i].colorIdx = letters[j] === '?' ? null : (letters[j].charCodeAt(0) - 65);
+    });
+    return { indices, letters, name: nameRhymeScheme(letters) };
+  });
+  return { lines, stanzas };
+}
+
+// Pulls a poem out of a note: the editor selection if any, else the first
+// ```poem block, else the whole note — minus frontmatter and Markdown
+// syntax (headings, quotes/callouts, list markers, links, emphasis, HTML).
+// Mirrors the French plugin's "Note active" button.
+function extractPoemFromNote(content, selection) {
+  let text, source;
+  if (selection && selection.trim()) { text = selection; source = 'selection'; }
+  else {
+    const body = (content || '').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
+    const block = body.match(/^(`{3,}|~{3,})\s*(poem|poeme|poème)\b[^\n]*\n([\s\S]*?)^\1\s*$/mi);
+    if (block) { text = block[3]; source = 'poem block'; }
+    else { text = body; source = 'whole note'; }
+  }
+  const lines = text.replace(/\r\n?/g, '\n').split('\n').map((l) => l
+    .replace(/^\s*#{1,6}\s+/, '')
+    .replace(/^\s*(>\s*)+(\[![^\]]*\]\S*\s*)?/, '')
+    .replace(/^\s*([-*+]|\d+[.)])\s+/, '')
+    .replace(/!?\[\[([^\]|]*\|)?([^\]]*)\]\]/g, '$2')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__|\*|_|~~|==)/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+$/, ''));
+  const clean = lines.map((l) => (/^(-{3,}|\*{3,}|`{3,}.*|~{3,}.*|(#[\w/-]+\s*)+)$/.test(l.trim()) ? '' : l));
+  return { text: clean.join('\n').replace(/\n{3,}/g, '\n\n').trim(), source };
+}
+
+// Same palette as the French sibling plugin, so rhyme groups read alike.
+const RHYME_PALETTE = ['#c0392b', '#2980b9', '#27ae60', '#8e44ad', '#d68910', '#16a085', '#c2185b', '#5d4037', '#455a64', '#7f8c8d'];
+
+// "trimeter iambic" → "iambic trimeter" for display.
+function meterLabel(meter) {
+  if (!meter || !meter.name) return null;
+  if (meter.confidence === 'none') return 'irregular';
+  const m = meter.name.match(/^(\S+) (iambic|trochaic|anapestic|dactylic)(.*)$/);
+  return m ? `${m[2]} ${m[1]}${m[3]}` : meter.name;
+}
 // ============================================================
 // SONORITIES — alliteration, consonant web (every position, not just
 // initial), internal assonance, echo endings (mid-line rhyme echoes).
@@ -1114,8 +1202,210 @@ async function fetchDatamuseMeansLike(word) {
 }
 
 // ============================================================
-// VIEW
+// SHARED RENDERING HELPERS
+// English counterparts of the French plugin's display helpers (word
+// chips with a syllable count, "+ N more" lists, collapsible source
+// blocks, tag chips and collapsible filter sections), so every tab
+// is built from the same pieces in both plugins.
 // ============================================================
+const WORDS_SHOWN_CAP = 15;
+
+function syllablesOfExpression(expr, cmudictIndex) {
+  return (expr || '').trim().split(/\s+/).filter(Boolean)
+    .reduce((n, w) => n + (lookupWord(w, cmudictIndex, null).syllableCount || 0), 0);
+}
+
+function lastWordOfExpression(expr) {
+  const words = (expr || '').trim().split(/\s+/).filter(Boolean);
+  return words.length ? words[words.length - 1] : '';
+}
+
+// True when both words have a known rhyme key and it is the same.
+function wordsRhyme(a, b, cmudictIndex) {
+  const ka = rhymeKeyForWord(a, cmudictIndex);
+  const kb = rhymeKeyForWord(b, cmudictIndex);
+  return ka !== null && ka === kb;
+}
+
+// Syllable filter value: '' (any), '1'…'4', or '5+'.
+function filterBySyllables(list, value, cmudictIndex) {
+  if (!value) return list || [];
+  const target = value === '5+' ? null : parseInt(value, 10);
+  return (list || []).filter((w) => {
+    const n = syllablesOfExpression(w, cmudictIndex);
+    return target === null ? n >= 5 : n === target;
+  });
+}
+
+function filterByRhyme(list, target, cmudictIndex) {
+  if (!target) return list || [];
+  return (list || []).filter((w) => wordsRhyme(target, lastWordOfExpression(w), cmudictIndex));
+}
+
+function makeSyllableSelect(parent) {
+  const wrap = parent.createDiv({ cls: 'pn-select-wrap' });
+  const select = wrap.createEl('select', { cls: 'pn-filtre-syllabes' });
+  wrap.createSpan({ cls: 'pn-select-arrow', text: '▾' });
+  [['', 'Any syllables'], ['1', '1 syll.'], ['2', '2 syll.'], ['3', '3 syll.'], ['4', '4 syll.'], ['5+', '5+ syll.']]
+    .forEach(([v, label]) => select.createEl('option', { attr: { value: v }, text: label }));
+  return select;
+}
+
+// A toggle pill (checkbox hidden, filled when checked).
+function makeTogglePill(parent, label, checked, title) {
+  const lbl = parent.createEl('label', { cls: 'pn-hasard-toggle-pool' });
+  const input = lbl.createEl('input', { attr: { type: 'checkbox' } });
+  input.checked = !!checked;
+  lbl.createSpan({ text: ' ' + label });
+  if (title) lbl.setAttr('title', title);
+  return input;
+}
+
+// Collapsible block for one source of results (local dictionary, Datamuse…).
+function makeSourceBlock(container, title, open, local) {
+  const details = container.createEl('details', { cls: 'pn-syn-source-details' + (local ? ' pn-syn-source-local' : '') });
+  if (open) details.setAttr('open', 'true');
+  details.createEl('summary', { cls: 'pn-syn-source-details-titre', text: title });
+  return details.createDiv({ cls: 'pn-syn-source-corps' });
+}
+
+// One word chip with its syllable count as a superscript. With an
+// `excluded` Set, clicking the chip toggles it in/out of that set
+// (greyed + struck through) — used before saving online results.
+function makeWordChip(parent, word, cls, cmudictIndex, excluded) {
+  const span = parent.createSpan({ cls, text: word });
+  span.createEl('sup', { text: String(syllablesOfExpression(word, cmudictIndex)) });
+  if (excluded) {
+    span.addClass('pn-mot-excluable');
+    span.setAttr('title', 'Click to leave this word out before saving to your personal dictionary (click again to undo).');
+    span.addEventListener('click', () => {
+      if (excluded.has(word)) { excluded.delete(word); span.removeClass('pn-mot-exclu'); }
+      else { excluded.add(word); span.addClass('pn-mot-exclu'); }
+    });
+  }
+  return span;
+}
+
+// Shows the first WORDS_SHOWN_CAP items, then a "+ N more" button.
+function showWithLimit(parent, list, renderOne) {
+  list.slice(0, WORDS_SHOWN_CAP).forEach(renderOne);
+  const rest = list.slice(WORDS_SHOWN_CAP);
+  if (rest.length > 0) {
+    const more = parent.createEl('button', { cls: 'pn-mot-voir-plus', text: `+ ${rest.length} more` });
+    more.addEventListener('click', () => { more.remove(); rest.forEach(renderOne); });
+  }
+}
+
+// Titled group of word chips. opts: { type ('syno'|'anto'|null),
+// excluded (Set, makes chips excludable), extraCls (on the group),
+// onChip(span, word) (hook after each chip is created) }.
+function makeWordGroup(container, title, list, chipCls, cmudictIndex, opts) {
+  if (!list || list.length === 0) return null;
+  const o = opts || {};
+  const g = container.createDiv({ cls: 'pn-groupe' + (o.type ? ' pn-groupe-' + o.type : '') + (o.extraCls ? ' ' + o.extraCls : '') });
+  g.createDiv({ cls: 'pn-titre', text: `${title} (${list.length})` });
+  const words = g.createDiv({ cls: 'pn-mots' });
+  showWithLimit(words, list, (w) => {
+    const span = makeWordChip(words, w, chipCls, cmudictIndex, o.excluded);
+    if (o.onChip) o.onChip(span, w);
+  });
+  return g;
+}
+
+// ---- tags (Random tab) ----
+function tagColor(tag) {
+  let hash = 0;
+  for (let i = 0; i < tag.length; i++) hash = (hash * 31 + tag.charCodeAt(i)) >>> 0;
+  return RHYME_PALETTE[hash % RHYME_PALETTE.length];
+}
+
+function makeTagChip(container, tag, onRemove) {
+  const chip = container.createSpan({ cls: 'pn-tag-chip' });
+  const c = tagColor(tag);
+  chip.style.background = c;
+  chip.style.borderColor = c;
+  chip.style.color = '#fff';
+  chip.createSpan({ text: tag });
+  if (onRemove) {
+    const x = chip.createSpan({ cls: 'pn-tag-chip-x', text: ' ×' });
+    x.addEventListener('click', onRemove);
+  }
+  return chip;
+}
+
+// Collapsible section with a coloured frame and an "· N active" badge.
+function makeCollapsibleSection(container, title, colorCls) {
+  const wrap = container.createDiv({ cls: 'pn-hasard-section-repliable' + (colorCls ? ' ' + colorCls : '') });
+  const header = wrap.createDiv({ cls: 'pn-hasard-section-header' });
+  const caret = header.createSpan({ cls: 'pn-hasard-section-caret', text: '▸' });
+  header.createSpan({ cls: 'pn-hasard-section-titre', text: title });
+  const badge = header.createSpan({ cls: 'pn-hasard-section-badge' });
+  const body = wrap.createDiv({ cls: 'pn-hasard-section-body' });
+  body.style.display = 'none';
+  let open = false;
+  let countFn = () => 0;
+  const render = () => {
+    const n = countFn();
+    badge.setText(n > 0 ? `· ${n} active` : '');
+    caret.setText(open ? '▾' : '▸');
+    body.style.display = open ? 'block' : 'none';
+  };
+  header.addEventListener('click', () => { open = !open; render(); });
+  return { body, render, setCountBadge: (fn) => { countFn = fn; } };
+}
+
+// "See all tags" toggle + searchable grid of tag buttons.
+function makeAllTagsPanel(container, toggleBtn, getTags, onPick, label) {
+  label = label || 'See all tags';
+  let open = false;
+  const box = container.createDiv({ cls: 'pn-hasard-tous-tags-box' });
+  box.style.display = 'none';
+  const search = box.createEl('input', { cls: 'pn-hasard-tous-tags-filtre', attr: { type: 'text', placeholder: 'Filter the list…' } });
+  const grid = box.createDiv({ cls: 'pn-hasard-tous-tags-grille' });
+  const renderGrid = () => {
+    const q = search.value.trim().toLowerCase();
+    grid.empty();
+    const tags = getTags().filter((t) => !q || t.toLowerCase().includes(q));
+    if (tags.length === 0) { grid.createEl('p', { cls: 'pn-vide', text: 'No tag matches.' }); return; }
+    tags.forEach((tag) => {
+      const b = grid.createEl('button', { cls: 'pn-hasard-preset-btn-mini', text: tag });
+      const c = tagColor(tag);
+      b.style.borderColor = c;
+      b.style.color = c;
+      b.addEventListener('click', () => onPick(tag));
+    });
+  };
+  search.addEventListener('input', renderGrid);
+  const render = () => {
+    const tags = getTags();
+    toggleBtn.style.display = tags.length > 0 ? 'inline-block' : 'none';
+    toggleBtn.setText(open ? 'Hide the other tags' : `${label} (${tags.length})`);
+    box.style.display = open ? 'block' : 'none';
+    if (open) renderGrid();
+  };
+  toggleBtn.addEventListener('click', () => { open = !open; render(); });
+  return { render };
+}
+
+// ============================================================
+// VIEW
+// Same layout as the French sibling plugin (Carnet du Poète): a title,
+// a tab bar, then one panel per tab, all built once and shown/hidden on
+// tab switch (so a search or a draft isn't lost when changing tabs).
+// CSS classes mirror the French plugin's names with a pn- prefix, so
+// both plugins share one visual language (see styles.css).
+// ============================================================
+const PN_TABS = [
+  ['syllables', 'Syllables', 'Write or paste your verses to count syllables, detect meter and see the rhyme scheme (AABB, ABAB…).\nThe "Sonorities" side (button at the top) also shows alliteration and internal assonance.'],
+  ['rhymes', 'Rhymes', 'Find rhymes for a word in CMUdict, optionally completed online by Datamuse.\nFilter by starting letter, syllable count and rhyme type.'],
+  ['inspiration', 'Inspiration', 'Type a common word, get rarer, more literary vocabulary on the same theme.'],
+  ['synonyms', 'Synonyms', 'Type a word to see its synonyms and antonyms.\nUseful to vary a rhyme or a rhythm without changing the meaning.'],
+  ['guide', 'Guide', 'Quick reference for the prosody terms used by the plugin: meter, feet, rhyme, forms.'],
+  ['definitions', 'Definitions', 'Check the exact meaning and register of a word before using it (English Wiktionary).'],
+  ['random', 'Random', 'A rare or literary word drawn at random — for surprise and inspiration.\nMark it (like, exclude, free tag) to tune future draws.'],
+  ['notes', 'Notes', 'Find the words in your personal dictionary that have no note yet, and add one.\nSaved directly to your personal dictionary.'],
+];
+
 class PoetsNotebookView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -1135,211 +1425,274 @@ class PoetsNotebookView extends ItemView {
   render() {
     const container = this.containerEl.children[1];
     container.empty();
-    container.addClass('poets-notebook-container');
+    container.addClass('poets-notebook-view');
 
-    const tabBar = container.createDiv({ cls: 'pn-tab-bar' });
-    const tabs = [
-      ['syllables', 'Syllables'],
-      ['rhymes', 'Rhymes'],
-      ['inspiration', 'Inspiration'],
-      ['synonyms', 'Synonyms'],
-      ['definitions', 'Definitions'],
-      ['guide', 'Guide'],
-      ['random', 'Random'],
-      ['notes', 'Notes'],
-    ];
-    for (const [id, label] of tabs) {
-      const btn = tabBar.createEl('button', { text: label, cls: 'pn-tab-btn' });
-      if (id === this.activeTab) btn.addClass('pn-tab-active');
-      btn.addEventListener('click', () => {
-        this.activeTab = id;
-        this.render();
-      });
-    }
-
-    const body = container.createDiv({ cls: 'pn-tab-body' });
+    container.createEl('h2', { text: 'Poetry Notebook' });
 
     if (!this.plugin.cmudictIndex) {
-      const banner = body.createDiv({ cls: 'pn-banner' });
+      const banner = container.createDiv({ cls: 'pn-banner' });
       banner.setText(
         'CMUdict not found in this vault. Syllable/stress accuracy will fall back to an approximate heuristic. ' +
         'Place a cmudict.dict file at the vault root, in .obsidian/, or in this plugin\'s folder, then reopen this panel.'
       );
     }
 
-    if (this.activeTab === 'syllables') {
-      this.renderSyllablesTab(body);
-    } else if (this.activeTab === 'rhymes') {
-      this.renderRhymesTab(body);
-    } else if (this.activeTab === 'synonyms') {
-      this.renderSynonymsTab(body);
-    } else if (this.activeTab === 'definitions') {
-      this.renderDefinitionsTab(body);
-    } else if (this.activeTab === 'guide') {
-      this.renderGuideTab(body);
-    } else if (this.activeTab === 'inspiration') {
-      this.renderInspirationTab(body);
-    } else if (this.activeTab === 'random') {
-      this.renderRandomTab(body);
-    } else if (this.activeTab === 'notes') {
-      this.renderNotesTab(body);
-    } else {
-      body.createDiv({ cls: 'pn-placeholder', text: 'Coming soon.' });
+    const tabBar = container.createDiv({ cls: 'pn-tabs' });
+    this.tabButtons = {};
+    this.panels = {};
+    for (const [id, label, tip] of PN_TABS) {
+      const btn = tabBar.createEl('button', { text: label, cls: 'pn-tab' });
+      btn.setAttr('title', tip);
+      btn.addEventListener('click', () => this.switchTab(id));
+      this.tabButtons[id] = btn;
     }
+    for (const [id] of PN_TABS) this.panels[id] = container.createDiv({ cls: 'pn-panel' });
+
+    this.renderSyllablesTab(this.panels.syllables);
+    this.renderRhymesTab(this.panels.rhymes);
+    this.renderInspirationTab(this.panels.inspiration);
+    this.renderSynonymsTab(this.panels.synonyms);
+    this.renderGuideTab(this.panels.guide);
+    this.renderDefinitionsTab(this.panels.definitions);
+    this.renderRandomTab(this.panels.random);
+    this.renderNotesTab(this.panels.notes);
+
+    this.switchTab(this.activeTab);
   }
 
-  renderSyllablesTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-syllables-tab' });
+  switchTab(id) {
+    this.activeTab = id;
+    for (const [tid] of PN_TABS) {
+      this.tabButtons[tid].toggleClass('active', tid === id);
+      this.panels[tid].toggleClass('active', tid === id);
+    }
+    if (id === 'notes' && this._refreshNotes) this._refreshNotes();
+  }
 
-    const btnRow = wrap.createDiv({ cls: 'pn-actions-row' });
-    const flipBtn = btnRow.createEl('button', { cls: 'pn-icon-btn pn-icon-btn-cyan' });
+  // ---- Syllables tab ----
+  // Same structure as the French plugin's Syllabes tab: action bar
+  // (Sonorities flip + Export / Copy / Active note / Clear), the draft,
+  // then a flip card — Structure on the front (options, one row per line,
+  // stanza schemes, totals), Sonorities on the back.
+  renderSyllablesTab(panel) {
+    const actionsBar = panel.createDiv({ cls: 'pn-toolbar-actions' });
+    const flipBtn = actionsBar.createEl('button', { cls: 'pn-icon-btn pn-icon-btn-pill pn-icon-btn-cyan' });
     const flipIcon = flipBtn.createSpan({ text: '🔄' });
     const flipLabel = flipBtn.createSpan({ cls: 'pn-icon-btn-label', text: 'Sonorities' });
     flipBtn.createSpan({ cls: 'pn-experimental-tag', text: 'experimental' });
     flipBtn.setAttr('title', 'Flip to see sound patterns (alliteration, consonant web, internal assonance, echo endings). Experimental: newer and less battle-tested than the rest of this plugin — feedback welcome.');
-    const rightActions = btnRow.createDiv({ cls: 'pn-actions-row-right' });
-    const copyBtn = rightActions.createEl('button', { cls: 'pn-icon-btn' });
-    copyBtn.createSpan({ text: '📋' });
-    copyBtn.createSpan({ cls: 'pn-icon-btn-label', text: 'Copy draft' });
-    const clearBtn = rightActions.createEl('button', { cls: 'pn-icon-btn' });
-    clearBtn.createSpan({ text: '🗑️' });
-    clearBtn.createSpan({ cls: 'pn-icon-btn-label', text: 'Clear draft' });
+    const saveState = actionsBar.createSpan({ cls: 'pn-save-state' });
+    const mkBtn = (icon, label, title) => {
+      const b = actionsBar.createEl('button', { cls: 'pn-icon-btn' });
+      b.createSpan({ text: icon });
+      b.createSpan({ cls: 'pn-icon-btn-label', text: label });
+      b.setAttr('title', title);
+      b.setAttr('aria-label', title);
+      return b;
+    };
+    const exportBtn = mkBtn('⬇', 'Export', 'Copy the analysis as a Markdown table');
+    const copyBtn = mkBtn('⎘', 'Copy', 'Copy the draft');
+    const noteBtn = mkBtn('📄', 'Active note', 'Load into the draft the selection in the open note, else its first ```poem block, else the whole note (Markdown syntax removed).');
+    const clearBtn = mkBtn('🗑️', 'Clear', 'Clear the draft');
 
-    const textarea = wrap.createEl('textarea', {
+    const textarea = panel.createEl('textarea', {
       cls: 'pn-textarea',
-      attr: { placeholder: 'Paste your poem here, one verse per line…', rows: '8' },
+      attr: { placeholder: 'Write or paste your verses here, one per line…' },
     });
     if (this.plugin.draftText) textarea.value = this.plugin.draftText;
 
-    const flipZone = wrap.createDiv({ cls: 'pn-flip-zone' });
+    const flipZone = panel.createDiv({ cls: 'pn-flip-zone' });
     const flipCard = flipZone.createDiv({ cls: 'pn-flip-card' });
-    const flipFront = flipCard.createDiv({ cls: 'pn-flip-face' });
+    const flipFront = flipCard.createDiv({ cls: 'pn-flip-face pn-flip-front' });
     const flipBack = flipCard.createDiv({ cls: 'pn-flip-face pn-flip-back' });
 
-    // "Rhyme colors" only makes sense on the Structure face (it colours
-    // the rhyme-scheme badges below) — lives inside flipFront so it's
-    // never shown while looking at Sonorities on the back face.
-    const optionsRow = flipFront.createDiv({ cls: 'pn-options-row' });
-    const colorLabel = optionsRow.createEl('label', { cls: 'pn-checkbox-label' });
-    const colorCheckbox = colorLabel.createEl('input', { attr: { type: 'checkbox' } });
-    colorCheckbox.checked = this.plugin.settings.showRhymeColors !== false;
-    colorLabel.appendText(' Rhyme colors');
+    const toolbar = flipFront.createDiv({ cls: 'pn-toolbar' });
+    const mkToggle = (parent, label, checked, title) => {
+      const lbl = parent.createEl('label', { cls: 'pn-hasard-toggle-pool' });
+      const input = lbl.createEl('input', { attr: { type: 'checkbox' } });
+      input.checked = checked;
+      lbl.createSpan({ text: ' ' + label });
+      if (title) lbl.setAttr('title', title);
+      return input;
+    };
+    const colorsToggle = mkToggle(toolbar, 'Rhyme colors', this.plugin.settings.showRhymeColors !== false);
+    const continuousToggle = mkToggle(toolbar, 'Continuous rhymes across stanzas', this.plugin.settings.continuousRhymes !== false,
+      'By default each stanza starts again at A. Check to carry the letters on from one stanza to the next (useful for sonnets: ABAB CDCD EFEF GG rather than ABAB ABAB…).');
 
-    const results = flipFront.createDiv({ cls: 'pn-results' });
-    const summary = flipFront.createDiv({ cls: 'pn-summary' });
+    const analysisDiv = flipFront.createDiv({ cls: 'pn-analyse' });
+    const schemaDiv = flipFront.createDiv({ cls: 'pn-schema-rimes' });
+    const totalBar = flipFront.createDiv({ cls: 'pn-total-bar' });
+    totalBar.style.display = 'none';
 
     const syncFlipHeight = () => {
-      const activeFace = flipZone.hasClass('pn-flipped') ? flipBack : flipFront;
+      const activeFace = flipZone.hasClass('flipped') ? flipBack : flipFront;
       requestAnimationFrame(() => { flipCard.style.height = activeFace.scrollHeight + 'px'; });
     };
 
+    let renderSonoritiesBack = () => {};
     let debounceTimer = null;
     const scheduleAnalysis = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        this.runAnalysis(textarea.value, results, summary, colorCheckbox.checked);
+      debounceTimer = setTimeout(async () => {
+        await this.runAnalysis(textarea.value, analysisDiv, schemaDiv, totalBar,
+          colorsToggle.checked, continuousToggle.checked);
         syncFlipHeight();
-        if (flipZone.hasClass('pn-flipped')) renderSonoritiesBack();
+        if (flipZone.hasClass('flipped')) renderSonoritiesBack();
       }, 250);
     };
 
-    let renderSonoritiesBack = () => {}; // reassigned below, once dependencies are in scope
-
-    textarea.addEventListener('input', () => {
+    let saveTimer = null;
+    const saveDraft = () => {
       this.plugin.draftText = textarea.value;
-      this.plugin.saveSettings();
+      saveState.setText('…');
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        await this.plugin.saveSettings();
+        saveState.setText('draft saved');
+        setTimeout(() => saveState.setText(''), 1200);
+      }, 700);
+    };
+
+    textarea.addEventListener('input', () => { saveDraft(); scheduleAnalysis(); });
+
+    colorsToggle.addEventListener('change', async () => {
+      this.plugin.settings.showRhymeColors = colorsToggle.checked;
+      await this.plugin.saveSettings();
       scheduleAnalysis();
     });
-
-    colorCheckbox.addEventListener('change', async () => {
-      this.plugin.settings.showRhymeColors = colorCheckbox.checked;
+    continuousToggle.addEventListener('change', async () => {
+      this.plugin.settings.continuousRhymes = continuousToggle.checked;
       await this.plugin.saveSettings();
       scheduleAnalysis();
     });
 
     flipBtn.addEventListener('click', () => {
-      flipZone.toggleClass('pn-flipped', !flipZone.hasClass('pn-flipped'));
-      const onBack = flipZone.hasClass('pn-flipped');
+      flipZone.toggleClass('flipped', !flipZone.hasClass('flipped'));
+      const onBack = flipZone.hasClass('flipped');
       if (onBack) renderSonoritiesBack();
       syncFlipHeight();
       flipLabel.setText(onBack ? 'Structure' : 'Sonorities');
       flipBtn.setAttr('title', onBack
-        ? 'Flip back to syllables, stress and rhyme scheme'
+        ? 'Flip back to syllables, meter and rhyme scheme'
         : 'Flip to see sound patterns (alliteration, consonant web, internal assonance, echo endings)');
       flipIcon.addClass('pn-icon-flip');
       setTimeout(() => flipIcon.removeClass('pn-icon-flip'), 600);
     });
 
+    exportBtn.addEventListener('click', async () => {
+      const poem = analyzePoem(textarea.value, this.plugin.cmudictIndex, this.datamuseCache, continuousToggle.checked);
+      const rows = poem.lines.filter((l) => !l.empty);
+      if (rows.length === 0) { new Notice('Nothing to export.'); return; }
+      let md = '| Line | Syllables | Meter | Rhyme |\n| --- | --- | --- | --- |\n';
+      rows.forEach((l) => {
+        md += `| ${l.text.trim().replace(/\|/g, '\\|')} | ${l.totalSyllables} | ${meterLabel(l.meter) || ''} | ${l.letter && l.letter !== '?' ? l.letter : ''} |\n`;
+      });
+      try {
+        await navigator.clipboard.writeText(md);
+        new Notice('Analysis copied as Markdown — paste it wherever you like.');
+      } catch (e) {
+        new Notice('Could not copy automatically; see the console for the generated Markdown.');
+        console.log(md);
+      }
+    });
+
     copyBtn.addEventListener('click', async () => {
+      if (!textarea.value.trim()) { new Notice('The draft is empty.'); return; }
       try {
         await navigator.clipboard.writeText(textarea.value);
-        new Notice('Draft copied to clipboard');
+        new Notice('Draft copied to clipboard.');
       } catch (e) {
-        new Notice('Could not copy — clipboard access denied');
+        new Notice('Could not copy automatically (see the console).');
+        console.log(textarea.value);
       }
+    });
+
+    noteBtn.addEventListener('click', async () => {
+      const file = this.app.workspace.getActiveFile();
+      if (!file || file.extension !== 'md') { new Notice("Poet's Notebook: no Markdown note is open."); return; }
+      const content = await this.app.vault.read(file);
+      let selection = '';
+      this.app.workspace.iterateAllLeaves((leaf) => {
+        const v = leaf.view;
+        if (!selection && v && v.file === file && v.editor && typeof v.editor.getSelection === 'function') {
+          selection = v.editor.getSelection() || '';
+        }
+      });
+      const extract = extractPoemFromNote(content, selection);
+      if (!extract.text) { new Notice("Poet's Notebook: nothing to load (note empty after cleanup)."); return; }
+      textarea.value = extract.text;
+      saveDraft();
+      scheduleAnalysis();
+      new Notice(`Poet's Notebook: "${file.basename}" loaded into the draft (${extract.source}).`);
     });
 
     clearBtn.addEventListener('click', async () => {
       textarea.value = '';
       this.plugin.draftText = '';
       await this.plugin.saveSettings();
-      results.empty();
-      summary.empty();
-      if (flipZone.hasClass('pn-flipped')) renderSonoritiesBack();
+      analysisDiv.empty();
+      schemaDiv.empty();
+      totalBar.style.display = 'none';
+      if (flipZone.hasClass('flipped')) renderSonoritiesBack();
       syncFlipHeight();
     });
 
     renderSonoritiesBack = this.buildSonoritiesRenderer(flipBack, textarea, syncFlipHeight);
 
-    // Live analysis on open if a draft already exists
     if (textarea.value.trim().length > 0) scheduleAnalysis();
   }
 
-  // Builds the back-face renderer for the Sonorities flip card. Returns a
-  // function to call whenever the poem text or settings change and the
-  // back face is (or becomes) visible — kept separate from the front-face
-  // analysis loop so the two don't re-render each other unnecessarily.
+  // Back face of the flip card (Sonorities). Returns a render function to
+  // call whenever the draft or settings change while the back is visible.
   buildSonoritiesRenderer(flipBack, textarea, syncFlipHeight) {
-    const toolbar = flipBack.createDiv({ cls: 'pn-son-toolbar' });
-    flipBack.createEl('p', {
-      cls: 'pn-son-legend-hint',
-      text: 'Experimental: this panel is newer and less tested than the rest of Poetry Notebook. Sound detection relies entirely on CMUdict — words missing from it are skipped rather than guessed at.',
-    });
-    const leftGroup = toolbar.createDiv({ cls: 'pn-son-toolbar-left' });
-    const modeSelect = leftGroup.createEl('select');
+    const toolbar = flipBack.createDiv({ cls: 'pn-toolbar' });
+    const modeWrap = toolbar.createDiv({ cls: 'pn-select-wrap' });
+    const modeSelect = modeWrap.createEl('select', { cls: 'pn-son-mode-select' });
     [['exact', 'Exact sounds'], ['simple', 'Simplified families'], ['extended', 'Extended families']]
       .forEach(([v, label]) => modeSelect.createEl('option', { attr: { value: v }, text: label }));
+    modeWrap.createSpan({ cls: 'pn-select-arrow', text: '▾' });
     modeSelect.value = 'simple';
-    leftGroup.createSpan({ cls: 'pn-son-seuil-label', text: 'Threshold' });
-    const seuilInput = leftGroup.createEl('input', { attr: { type: 'number', min: '2', value: '3', style: 'width:48px' } });
+    modeSelect.setAttr('title', 'Exact sounds: each distinct ARPAbet phoneme. Simplified families: few groups, easiest to read. Extended families: fuller classification (e.g. voiced/voiceless stops apart) — more precise, more colours.');
+    const seuilLabel = toolbar.createDiv({ cls: 'pn-son-seuil' });
+    seuilLabel.createSpan({ text: 'Threshold ' });
+    const seuilInput = seuilLabel.createEl('input', { attr: { type: 'number', min: '2', max: '9', value: '3' } });
+    const mkToggle = (label, checked, title) => {
+      const lbl = toolbar.createEl('label', { cls: 'pn-hasard-toggle-pool' });
+      const input = lbl.createEl('input', { attr: { type: 'checkbox' } });
+      input.checked = checked;
+      lbl.createSpan({ text: ' ' + label });
+      if (title) lbl.setAttr('title', title);
+      return input;
+    };
+    const stopwordsToggle = mkToggle('Exclude stopwords', true);
+    const top3Toggle = mkToggle('Highlight only the 3 most frequent', true,
+      'The list stays complete; only the highlighting in the draft is limited to the 3 most frequent alliterations and assonances, for a less busy text.');
 
-    const rightGroup = toolbar.createDiv({ cls: 'pn-son-toolbar-right' });
-    const stopwordsLabel = rightGroup.createEl('label', { cls: 'pn-checkbox-label' });
-    const stopwordsCheckbox = stopwordsLabel.createEl('input', { attr: { type: 'checkbox' } });
-    stopwordsCheckbox.checked = true;
-    stopwordsLabel.appendText(' Exclude stopwords');
-    const top3Label = rightGroup.createEl('label', { cls: 'pn-checkbox-label' });
-    const top3Checkbox = top3Label.createEl('input', { attr: { type: 'checkbox' } });
-    top3Checkbox.checked = true;
-    top3Label.appendText(' Highlight only the 3 most frequent');
-
-    const legend = flipBack.createDiv({ cls: 'pn-son-legend' });
     flipBack.createEl('p', {
-      cls: 'pn-son-legend-hint',
-      text: 'Filled background = starts with this consonant. Underline = contains this vowel. A vowel-initial word (I, am, away, understand…) has no consonant to fill, so it can only ever be underlined — that\u2019s expected, not a bug.',
+      cls: 'pn-son-soustitre',
+      text: 'Experimental: sound detection relies entirely on CMUdict — words missing from it are skipped rather than guessed at. Filled background = starts with this consonant; underline = contains this vowel (a vowel-initial word can only ever be underlined).',
     });
-    const draftDiv = flipBack.createDiv({ cls: 'pn-son-draft' });
-    const jumpRow = flipBack.createDiv({ cls: 'pn-son-jump-row' });
-    ['Alliteration', 'Consonant web', 'Internal assonance', 'Echo endings'].forEach((label) => {
-      const pill = jumpRow.createEl('button', { cls: 'pn-tag-pill', text: label });
-      pill.addEventListener('click', () => {
-        const target = flipBack.querySelector(`[data-son-section="${label}"]`);
-        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const legendDiv = flipBack.createDiv({ cls: 'pn-son-legende' });
+    const draftDiv = flipBack.createDiv({ cls: 'pn-son-brouillon' });
+    const jumpsDiv = flipBack.createDiv({ cls: 'pn-son-sauts' });
+    const listDetails = flipBack.createEl('details', { cls: 'pn-son-liste-details' });
+    listDetails.createEl('summary', { text: 'See the detail by sound' });
+    const listDiv = listDetails.createDiv({ cls: 'pn-son-liste' });
+    const sectionTitleEls = {};
+    const SECTIONS = ['Alliteration', 'Internal assonance', 'Consonant web', 'Echo endings'];
+    SECTIONS.forEach((title) => {
+      const btn = jumpsDiv.createEl('button', { cls: 'pn-hasard-toggle-pool', text: title });
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        listDetails.setAttr('open', 'true');
+        requestAnimationFrame(() => {
+          syncFlipHeight();
+          if (sectionTitleEls[title]) sectionTitleEls[title].scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
       });
     });
-    const listDiv = flipBack.createDiv({ cls: 'pn-son-list' });
 
-    let spotlightSon = null; // active in Consonant Web mode: click a son to isolate it in the draft
+    let spotlightSon = null; // Consonant web: click a sound to isolate it in the draft
 
     const familyFn = (mode, isVowel) => {
       if (mode === 'exact') return null;
@@ -1347,90 +1700,86 @@ class PoetsNotebookView extends ItemView {
         ? (mode === 'simple' ? (ph => VOWEL_FAMILY_SIMPLE[ph]) : (ph => VOWEL_FAMILY_EXTENDED[ph]))
         : (mode === 'simple' ? consonantFamilySimple : consonantFamilyExtended);
     };
-
     const colourFor = (son, isVowel) => (isVowel ? THEME_VOWEL[son] : THEME_CONSONANT[son]) || 'pn-son-c1';
 
     const render = () => {
       if (!this.plugin.cmudictIndex) {
-        flipBack.empty();
-        flipBack.createDiv({ cls: 'pn-son-empty', text: 'CMUdict is required for Sonorities — see the banner above.' });
+        legendDiv.empty(); draftDiv.empty(); listDiv.empty();
+        legendDiv.createSpan({ cls: 'pn-son-vide', text: 'CMUdict is required for Sonorities — see the banner above.' });
+        syncFlipHeight();
         return;
       }
       const mode = modeSelect.value;
       const seuilMin = parseInt(seuilInput.value, 10) || 3;
-      const excludeStopwords = stopwordsCheckbox.checked;
+      const excludeStopwords = stopwordsToggle.checked;
       const poemText = textarea.value;
       const result = analyzeSonorities(poemText, this.plugin.cmudictIndex, this.plugin.sonorityBaseline, { excludeStopwords, seuilMin, mode });
 
-      // ---- legend ----
-      legend.empty();
-      const consFams = mode === 'exact'
-        ? Array.from(new Set(result.alliteration.map((e) => e.son)))
-        : Array.from(new Set(result.alliteration.map((e) => e.son)));
-      const g1 = legend.createSpan({ cls: 'pn-son-legend-group' });
-      g1.createSpan({ text: 'Alliteration: ' });
-      consFams.forEach((f) => {
-        g1.createSpan({ cls: 'pn-son-legend-dot ' + colourFor(f, false) });
-        g1.createSpan({ text: f + '  ' });
-      });
-      const vowFams = Array.from(new Set(result.internalAssonance.map((e) => e.son)));
-      const g2 = legend.createSpan({ cls: 'pn-son-legend-group' });
-      g2.createSpan({ text: 'Assonance: ' });
-      vowFams.forEach((f) => {
-        g2.createSpan({ cls: 'pn-son-legend-underline ' + colourFor(f, true) });
-        g2.createSpan({ text: f + '  ' });
-      });
+      const highlighted = top3Toggle.checked
+        ? { alliteration: result.alliteration.slice(0, 3), internalAssonance: result.internalAssonance.slice(0, 3) }
+        : result;
 
-      // ---- draft with highlighting ----
+      // ---- legend: only the sounds actually highlighted below ----
+      legendDiv.empty();
+      const addLegendGroup = (title, list, isVowel) => {
+        if (list.length === 0) return;
+        const group = legendDiv.createDiv({ cls: 'pn-son-legende-groupe' });
+        group.createSpan({ cls: 'pn-son-legende-titre', text: title + ': ' });
+        list.forEach((entry) => {
+          const chip = group.createSpan({ cls: 'pn-son-legende-puce' });
+          chip.createSpan({ cls: 'pn-son-legende-couleur ' + (isVowel ? 'pn-son-legende-vox ' : '') + colourFor(entry.son, isVowel) });
+          chip.createSpan({ cls: 'pn-son-legende-texte', text: entry.son });
+        });
+      };
+      addLegendGroup('Alliteration', highlighted.alliteration, false);
+      addLegendGroup('Assonance', highlighted.internalAssonance, true);
+      if (highlighted.alliteration.length === 0 && highlighted.internalAssonance.length === 0) {
+        legendDiv.createSpan({ cls: 'pn-son-vide', text: 'No pattern above the current threshold.' });
+      }
+
+      // ---- draft with highlighting (whole words: CMUdict gives phonemes,
+      // not letter positions) ----
       draftDiv.empty();
-      const dominantAllit = top3Checkbox.checked ? new Set(result.alliteration.slice(0, 3).map((e) => e.son)) : null;
-      const dominantAsson = top3Checkbox.checked ? new Set(result.internalAssonance.slice(0, 3).map((e) => e.son)) : null;
-
+      const dominantAllit = new Set(highlighted.alliteration.map((e) => e.son));
+      const dominantAsson = new Set(highlighted.internalAssonance.map((e) => e.son));
       const famAllitFn = familyFn(mode, false);
       const famAssonFn = familyFn(mode, true);
 
       poemText.split('\n').forEach((line, idxLine) => {
-        const lineEl = draftDiv.createDiv({ cls: 'pn-son-line' });
-        lineEl.createSpan({ cls: 'pn-son-linenum', text: String(idxLine + 1) });
+        const lineEl = draftDiv.createDiv({ cls: 'pn-son-brouillon-ligne' });
+        lineEl.createSpan({ cls: 'pn-son-brouillon-numero', text: String(idxLine + 1) });
         if (!line.trim()) { lineEl.createEl('br'); return; }
-        const fragments = line.split(/(\s+)/);
-        fragments.forEach((frag) => {
+        line.split(/(\s+)/).forEach((frag) => {
           if (!frag.trim()) { lineEl.createSpan({ text: frag }); return; }
           const wordRaw = frag.replace(/[^A-Za-z']/g, '');
-          if (!wordRaw) { lineEl.createSpan({ text: frag }); return; }
           const wl = wordRaw.toLowerCase().replace(/'/g, '');
-          const entry = resolveCmudictEntry(wordRaw, this.plugin.cmudictIndex);
+          const entry = wordRaw ? resolveCmudictEntry(wordRaw, this.plugin.cmudictIndex) : null;
           const isStop = excludeStopwords && STOPWORDS_EN.has(wl);
 
           if (spotlightSon) {
-            if (!entry || isStop) { lineEl.createSpan({ cls: 'pn-son-dim', text: frag }); return; }
-            const cons = allConsonantsOfEntry(entry);
-            const matches = cons.filter((c) => (famAllitFn ? famAllitFn(c.ph) : c.ph) === spotlightSon);
-            if (matches.length === 0) { lineEl.createSpan({ cls: 'pn-son-dim', text: frag }); return; }
-            // Best-effort position: highlight the whole word (ARPAbet
-            // phoneme index doesn't map cleanly back to letter offsets
-            // the way orthographic scanning does in the French plugin).
-            lineEl.createSpan({ cls: 'pn-son-init ' + colourFor(spotlightSon, false), text: frag });
+            if (!entry || isStop) { lineEl.createSpan({ cls: 'pn-son-brouillon-dim', text: frag }); return; }
+            const matches = allConsonantsOfEntry(entry).filter((c) => (famAllitFn ? famAllitFn(c.ph) : c.ph) === spotlightSon);
+            lineEl.createSpan({
+              cls: matches.length ? 'pn-son-surligne-init ' + colourFor(spotlightSon, false) : 'pn-son-brouillon-dim',
+              text: frag,
+            });
             return;
           }
-
           if (!entry || isStop) { lineEl.createSpan({ text: frag }); return; }
 
           const initPh = initialConsonantOfEntry(entry);
           const initKey = initPh ? (famAllitFn ? famAllitFn(initPh) : initPh) : null;
-          const showInit = initKey && (!dominantAllit || dominantAllit.has(initKey));
-
+          const showInit = initKey && dominantAllit.has(initKey);
           const vows = allVowelsOfEntry(entry);
-          const firstVowKey = vows.length ? (famAssonFn ? famAssonFn(vows[0].ph) : vows[0].ph) : null;
-          const showVox = firstVowKey && (!dominantAsson || dominantAsson.has(firstVowKey));
+          const vowKey = vows.length ? (famAssonFn ? famAssonFn(vows[0].ph) : vows[0].ph) : null;
+          const showVox = vowKey && dominantAsson.has(vowKey);
 
           if (showInit && showVox) {
-            const span = lineEl.createSpan({ cls: 'pn-son-init pn-son-vox ' + colourFor(initKey, false), text: frag });
-            span.addClass(colourFor(firstVowKey, true) + '-underline');
+            lineEl.createSpan({ cls: `pn-son-surligne-init ${colourFor(initKey, false)} ${colourFor(vowKey, true)}-underline`, text: frag });
           } else if (showInit) {
-            lineEl.createSpan({ cls: 'pn-son-init ' + colourFor(initKey, false), text: frag });
+            lineEl.createSpan({ cls: 'pn-son-surligne-init ' + colourFor(initKey, false), text: frag });
           } else if (showVox) {
-            lineEl.createSpan({ cls: 'pn-son-vox ' + colourFor(firstVowKey, true), text: frag });
+            lineEl.createSpan({ cls: 'pn-son-surligne-vox ' + colourFor(vowKey, true), text: frag });
           } else {
             lineEl.createSpan({ text: frag });
           }
@@ -1439,72 +1788,68 @@ class PoetsNotebookView extends ItemView {
 
       // ---- lists ----
       listDiv.empty();
-      const renderSection = (label, subtitle, list, isVowel, clickable) => {
-        const h4 = listDiv.createEl('h4', { text: label });
-        h4.setAttr('data-son-section', label);
-        listDiv.createEl('p', { cls: 'pn-son-subtitle', text: subtitle });
+      const renderSection = (title, subtitle, list, isVowel, onClick) => {
+        const h4 = listDiv.createEl('h4', { text: title });
+        sectionTitleEls[title] = h4;
+        listDiv.createEl('p', { cls: 'pn-son-soustitre', text: subtitle });
         if (list.length === 0) {
-          listDiv.createDiv({ cls: 'pn-son-empty', text: 'Nothing above the current threshold.' });
+          listDiv.createEl('p', { cls: 'pn-son-vide', text: 'No pattern above the current threshold.' });
           return;
         }
         list.forEach((entry) => {
-          const row = listDiv.createDiv({ cls: 'pn-son-row' + (clickable ? ' pn-son-row-clickable' : '') });
-          if (clickable && entry.son === spotlightSon) row.addClass('pn-son-row-active');
+          const row = listDiv.createDiv({ cls: 'pn-son-ligne' });
           const badge = row.createSpan({ cls: 'pn-son-badge ' + colourFor(entry.son, isVowel), text: entry.son.slice(0, 3) });
+          badge.setAttr('title', entry.son);
           const words = Array.from(new Set(entry.occurrences.map((o) => o.word)));
           const lines = Array.from(new Set(entry.occurrences.map((o) => o.line)));
-          row.createSpan({ cls: 'pn-son-words', text: `${words.join(', ')} — line${lines.length > 1 ? 's' : ''} ${lines.join(', ')}` });
+          row.createSpan({ cls: 'pn-son-mots', text: `${words.join(', ')} — line${lines.length > 1 ? 's' : ''} ${lines.join(', ')}` });
           row.createSpan({ cls: 'pn-son-count', text: `${entry.count} words` });
           if (entry.ratio != null) {
-            const ratioSpan = row.createSpan({ cls: 'pn-son-ratio' + (entry.ratio >= 1.5 ? ' pn-son-ratio-high' : '') });
+            const ratioSpan = row.createSpan({ cls: 'pn-son-ratio' + (entry.ratio >= 1.5 ? ' pn-son-ratio-fort' : '') });
             ratioSpan.setText('×' + entry.ratio.toFixed(1));
             ratioSpan.setAttr('title', `This sound occurs ${entry.ratio.toFixed(1)}× more often in this poem than in English on average (baseline computed live from the ${this.plugin.cmudictIndex.size}-word CMUdict index loaded in this vault).`);
           }
-          if (clickable) {
-            row.addEventListener('click', () => {
-              spotlightSon = spotlightSon === entry.son ? null : entry.son;
-              render();
-              syncFlipHeight();
-              if (spotlightSon) requestAnimationFrame(() => draftDiv.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-            });
+          if (onClick) {
+            row.addClass('pn-son-ligne-cliquable');
+            row.setAttr('title', 'Click to isolate this sound in the draft above.');
+            if (entry.son === spotlightSon) row.addClass('pn-son-ligne-active');
+            row.addEventListener('click', () => onClick(entry.son));
           }
         });
       };
-      renderSection('Alliteration', 'Consonant sound repeated at the start of nearby words', result.alliteration, false, false);
-      renderSection('Consonant web', 'A consonant sound that recurs anywhere in a word — attack, middle, or coda — not just at the start. Click a sound to isolate it in the draft above.', result.consonantWeb, false, true);
-      renderSection('Internal assonance', 'A vowel sound that recurs inside nearby words, aside from end-of-line rhyme', result.internalAssonance, true, false);
-      renderSection('Echo endings', 'Word endings that echo each other mid-line, not just the established end-of-line rhyme — needs at least one occurrence away from the line end, otherwise it would just restate the rhyme scheme.', result.echoEndings.map((e) => ({ ...e, son: e.key })), false, false);
+      renderSection('Alliteration', 'Consonant sound repeated at the start of nearby words', result.alliteration, false);
+      renderSection('Internal assonance', 'A vowel sound that recurs inside nearby words, aside from end-of-line rhyme', result.internalAssonance, true);
+      renderSection('Consonant web', 'A consonant sound that recurs anywhere in a word — attack, middle, or coda — not just at the start. Click a sound to isolate it in the draft.', result.consonantWeb, false, (son) => {
+        spotlightSon = spotlightSon === son ? null : son;
+        render();
+        syncFlipHeight();
+        if (spotlightSon) requestAnimationFrame(() => draftDiv.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+      });
+      renderSection('Echo endings', 'Word endings that echo each other away from the line end — needs at least one mid-line occurrence, otherwise it would just restate the rhyme scheme.', result.echoEndings.map((e) => ({ ...e, son: e.key })), false);
 
       syncFlipHeight();
     };
 
-    modeSelect.addEventListener('change', render);
-    seuilInput.addEventListener('change', render);
-    stopwordsCheckbox.addEventListener('change', render);
-    top3Checkbox.addEventListener('change', () => { render(); });
+    const rerender = () => { render(); syncFlipHeight(); };
+    modeSelect.addEventListener('change', rerender);
+    seuilInput.addEventListener('change', rerender);
+    stopwordsToggle.addEventListener('change', rerender);
+    top3Toggle.addEventListener('change', rerender);
+    listDetails.addEventListener('toggle', syncFlipHeight);
 
     return render;
   }
 
-  meterAbbrev(meter) {
-    if (!meter.name) return '?';
-    if (meter.footType === 'iambic') return 'I';
-    if (meter.footType === 'trochaic') return 'T';
-    if (meter.footType === 'anapestic') return 'A';
-    if (meter.footType === 'dactylic') return 'D';
-    return '~'; // irregular / mixed
-  }
-
-  async runAnalysis(text, resultsEl, summaryEl, showColors) {
-    resultsEl.empty();
-    if (summaryEl) summaryEl.empty();
-    const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-    if (lines.length === 0) return;
+  async runAnalysis(text, analysisDiv, schemaDiv, totalBar, showColors, continuous) {
+    analysisDiv.empty();
+    schemaDiv.empty();
+    const nonEmpty = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (nonEmpty.length === 0) { totalBar.style.display = 'none'; return; }
 
     // Optional Datamuse enrichment for words CMUdict doesn't know, only if allowed
     if (this.plugin.settings.allowDatamuse) {
       const allWords = new Set();
-      for (const line of lines) for (const w of tokenizeLine(line)) allWords.add(w.toLowerCase());
+      for (const line of nonEmpty) for (const w of tokenizeLine(line)) allWords.add(w.toLowerCase());
       for (const w of allWords) {
         const key = w.replace(/[^a-z']/g, '');
         if (this.plugin.cmudictIndex && this.plugin.cmudictIndex.has(key)) continue;
@@ -1514,403 +1859,380 @@ class PoetsNotebookView extends ItemView {
           if (d) this.datamuseCache.set(key, d);
         } catch (e) { /* offline or API error: silently fall back to heuristic */ }
       }
+      analysisDiv.empty();
+      schemaDiv.empty();
     }
 
-    const analyses = lines.map((line) => {
-      const a = analyzeLine(line, this.plugin.cmudictIndex, this.datamuseCache);
-      const meter = detectMeter(a.stressSeq, a.rigidSeq);
-      return { line, ...a, meter };
+    const poem = analyzePoem(text, this.plugin.cmudictIndex, this.datamuseCache, continuous);
+    let total = 0, count = 0;
+
+    poem.lines.forEach((l) => {
+      if (l.empty) return;
+      count++;
+      total += l.totalSyllables;
+      const color = l.colorIdx !== null ? RHYME_PALETTE[l.colorIdx % RHYME_PALETTE.length] : null;
+
+      const lineEl = analysisDiv.createDiv({ cls: 'pn-ligne' });
+      const top = lineEl.createDiv({ cls: 'pn-ligne-top' });
+      const textSpan = top.createSpan({ cls: 'pn-texte', text: l.text.trim() });
+      textSpan.setAttr('title', l.words.map((w) => `${w.word}(${w.syllableCount}, ${w.source})`).join(' '));
+      if (showColors && color) {
+        textSpan.style.borderLeft = `3px solid ${color}`;
+        textSpan.style.paddingLeft = '6px';
+      }
+
+      const badges = top.createDiv({ cls: 'pn-badges' });
+      if (showColors && l.letter) {
+        const rhymeBadge = badges.createSpan({ cls: 'pn-rime-lettre', text: l.letter });
+        const c = color || 'var(--text-muted)';
+        rhymeBadge.style.color = c;
+        rhymeBadge.style.borderColor = c;
+        rhymeBadge.setAttr('title', l.letter === '?' ? 'Rhyme unknown (word missing from CMUdict)' : `Rhyme group ${l.letter}`);
+      }
+      const label = meterLabel(l.meter);
+      if (label) {
+        const meterPill = badges.createSpan({ cls: 'pn-metre', text: label });
+        meterPill.setAttr('title', l.meter.confidence === 'none'
+          ? `No regular foot pattern (stresses: ${l.meter.rawPattern || '?'})`
+          : `${label} (${l.meter.confidence === 'exact' ? 'exact match' : 'approximate: some flexible syllables'})`);
+      }
+      badges.createSpan({ cls: 'pn-compte', text: String(l.totalSyllables) });
     });
 
-    const rhyme = detectRhymeScheme(lines, this.plugin.cmudictIndex);
-    const rhymeColors = ['#e07a5f', '#3d84a8', '#81b29a', '#f2cc8f', '#9b5de5', '#00bbf9', '#f15bb5', '#fee440'];
-    const letterColor = {};
-    let colorIdx = 0;
-    let totalSyllables = 0;
-
-    lines.forEach((line, i) => {
-      const a = analyses[i];
-      totalSyllables += a.totalSyllables;
-      const row = resultsEl.createDiv({ cls: 'pn-line-row' });
-
-      const letter = rhyme.scheme[i];
-      if (!(letter in letterColor)) { letterColor[letter] = rhymeColors[colorIdx % rhymeColors.length]; colorIdx++; }
-      const color = (showColors && letter !== '?') ? letterColor[letter] : 'var(--text-muted)';
-      row.style.borderLeftColor = color;
-
-      const textEl = row.createSpan({ cls: 'pn-line-text', text: line });
-      textEl.setAttr('title', a.words.map((w) => `${w.word}(${w.syllableCount}, ${w.source})`).join(' '));
-
-      const badges = row.createDiv({ cls: 'pn-badges' });
-
-      const rhymeBadge = badges.createSpan({ cls: 'pn-badge pn-rhyme-badge', text: letter });
-      rhymeBadge.style.color = color;
-      rhymeBadge.style.borderColor = color;
-      rhymeBadge.setAttr('title', letter === '?' ? 'Rhyme unknown (word missing from CMUdict)' : `Rhyme group ${letter}`);
-
-      const meterBadge = badges.createSpan({
-        cls: `pn-badge pn-meter-badge pn-meter-${a.meter.confidence}`,
-        text: this.meterAbbrev(a.meter),
+    if (poem.stanzas.some((s) => s.name) || poem.stanzas.length > 1) {
+      poem.stanzas.forEach((s, i) => {
+        const row = schemaDiv.createDiv({ cls: 'pn-schema-ligne' });
+        const prefix = poem.stanzas.length > 1 ? `Stanza ${i + 1}: ` : 'Scheme: ';
+        row.createSpan({ text: prefix + s.letters.join('') });
+        if (s.name) row.createSpan({ cls: 'pn-metre', text: s.name });
       });
-      meterBadge.setAttr('title', a.meter.name ? `${a.meter.name} (${a.meter.confidence})` : `Meter unknown — ${a.meter.reason}`);
-
-      badges.createSpan({ cls: 'pn-badge pn-syll-badge', text: String(a.totalSyllables) });
-    });
-
-    if (summaryEl) {
-      const avg = (totalSyllables / lines.length).toFixed(1);
-      summaryEl.createSpan({ text: `${lines.length} line${lines.length > 1 ? 's' : ''}` });
-      summaryEl.createSpan({ cls: 'pn-summary-total', text: `${totalSyllables} syllables` });
-      summaryEl.createSpan({ text: `≈ ${avg} / line` });
     }
+
+    totalBar.style.display = 'flex';
+    totalBar.empty();
+    totalBar.createSpan({ text: `${count} line${count > 1 ? 's' : ''}` });
+    totalBar.createEl('strong', { text: `${total} syllables` });
+    totalBar.createSpan({ text: `≈ ${(total / count).toFixed(1)} / line` });
   }
+  // ---- Rhymes tab ----
+  // Same structure as the French Rimes tab: search form, a framed filter
+  // box (letter / syllables, rhyme type), a framed "complete online" box,
+  // then one collapsible block per source.
+  renderRhymesTab(panel) {
+    const form = panel.createDiv({ cls: 'pn-rime-form' });
+    const wordInput = form.createEl('input', { attr: { type: 'text', placeholder: 'A word… (e.g. light, river, courage)' } });
+    const searchBtn = form.createEl('button', { text: 'Search' });
 
-  renderRhymesTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-rhymes-tab' });
+    const filtersBox = panel.createDiv({ cls: 'pn-boite pn-filtres' });
+    const lineLetter = filtersBox.createDiv({ cls: 'pn-filtres-ligne' });
+    lineLetter.createSpan({ cls: 'pn-filtres-ligne-label', text: 'Letter / syllables: ' });
+    const letterInput = lineLetter.createEl('input', { cls: 'pn-filtre-lettre', attr: { type: 'text', maxlength: '3', placeholder: 'Letter' } });
+    const syllSelect = makeSyllableSelect(lineLetter);
+    filtersBox.createDiv({ cls: 'pn-filtres-separateur' });
+    const lineType = filtersBox.createDiv({ cls: 'pn-filtres-ligne' });
+    lineType.createSpan({ cls: 'pn-filtres-ligne-label', text: 'Rhyme type: ' });
+    const typeDiv = lineType.createDiv({ cls: 'pn-qualite-filtres' });
+    const perfectToggle = makeTogglePill(typeDiv, 'Perfect', true, 'Stressed vowel and everything after it match exactly (light / flight).');
+    const nearToggle = makeTogglePill(typeDiv, 'Near / slant', !this.plugin.settings.strictRhymeMode, 'Close but not identical sounds: consonance or assonance (shape / keep).');
 
-    const searchRow = wrap.createDiv({ cls: 'pn-rhyme-search-row' });
-    const wordInput = searchRow.createEl('input', {
-      cls: 'pn-rhyme-input',
-      attr: { type: 'text', placeholder: 'Word to rhyme with…' },
-    });
-    const searchBtn = searchRow.createEl('button', { text: 'Search', cls: 'mod-cta' });
-
-    const filtersRow = wrap.createDiv({ cls: 'pn-rhyme-filters-row' });
-    const letterLabel = filtersRow.createEl('label', { cls: 'pn-filter-label', text: 'Starts with:' });
-    const letterInput = letterLabel.createEl('input', {
-      cls: 'pn-rhyme-filter-input',
-      attr: { type: 'text', maxlength: '3', placeholder: 'any' },
-    });
-    const syllLabel = filtersRow.createEl('label', { cls: 'pn-filter-label', text: 'Syllables:' });
-    const syllInput = syllLabel.createEl('input', {
-      cls: 'pn-rhyme-filter-input',
-      attr: { type: 'number', min: '1', placeholder: 'any' },
-    });
-
-    const optionsRow = wrap.createDiv({ cls: 'pn-options-row' });
-    const datamuseLabel = optionsRow.createEl('label', { cls: 'pn-checkbox-label' });
-    const datamuseCheckbox = datamuseLabel.createEl('input', { attr: { type: 'checkbox' } });
-    datamuseLabel.appendText(' Include Datamuse (online)');
-
-    const rhymezoneLink = optionsRow.createEl('a', {
-      cls: 'pn-external-link',
-      text: 'Open in RhymeZone ↗',
-      attr: { href: '#' },
-    });
+    const sourcesBox = panel.createDiv({ cls: 'pn-boite pn-sources' });
+    sourcesBox.createSpan({ cls: 'pn-sources-label', text: 'Complete online: ' });
+    const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse', (this.plugin.settings.onlineSources || []).includes('rhymes'),
+      'Adds Datamuse matches not already found in CMUdict.');
+    const rhymezoneLink = sourcesBox.createEl('a', { cls: 'pn-inspi-lien', text: 'RhymeZone ↗', attr: { href: '#' } });
+    rhymezoneLink.setAttr('title', "Open the word on RhymeZone for its own advanced filters");
     rhymezoneLink.addEventListener('click', (evt) => {
       evt.preventDefault();
       const w = wordInput.value.trim();
-      if (!w) return;
-      window.open(`https://www.rhymezone.com/r/rhyme.cgi?Word=${encodeURIComponent(w)}&typeofrhyme=perfect`, '_blank');
+      if (w) window.open(`https://www.rhymezone.com/r/rhyme.cgi?Word=${encodeURIComponent(w)}&typeofrhyme=perfect`, '_blank');
     });
 
-    const results = wrap.createDiv({ cls: 'pn-rhyme-results' });
+    const results = panel.createDiv({ cls: 'pn-resultats' });
 
-    const doSearch = () => {
-      const word = wordInput.value.trim();
-      if (!word) return;
-      this.runRhymeSearch(word, {
-        letter: letterInput.value.trim(),
-        syllables: syllInput.value ? Number(syllInput.value) : null,
-        includeDatamuse: datamuseCheckbox.checked,
-      }, results);
-    };
+    const doSearch = () => this.renderRhymeResults(results, wordInput.value, {
+      letter: letterInput.value.trim(),
+      syllables: syllSelect.value,
+      perfect: perfectToggle.checked,
+      near: nearToggle.checked,
+      online: datamuseToggle.checked,
+    });
 
     searchBtn.addEventListener('click', doSearch);
     wordInput.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') doSearch(); });
-  }
-
-  renderRhymeGroup(container, title, items, cls) {
-    if (!items || items.length === 0) return;
-    const section = container.createDiv({ cls: `pn-rhyme-section ${cls || ''}` });
-    section.createEl('h4', { text: `${title} (${items.length})` });
-
-    const bySyllables = new Map();
-    for (const item of items) {
-      const n = item.syllableCount || 0;
-      if (!bySyllables.has(n)) bySyllables.set(n, []);
-      bySyllables.get(n).push(item.word);
-    }
-    const syllableCounts = [...bySyllables.keys()].sort((a, b) => a - b);
-    for (const n of syllableCounts) {
-      const row = section.createDiv({ cls: 'pn-rhyme-syll-group' });
-      row.createSpan({ cls: 'pn-rhyme-syll-label', text: n ? `${n} syll.:` : '?:' });
-      row.createSpan({ cls: 'pn-rhyme-word-list', text: bySyllables.get(n).join(', ') });
-    }
-  }
-
-  async runRhymeSearch(word, options, resultsEl) {
-    resultsEl.empty();
-
-    if (!this.plugin.cmudictIndex) {
-      resultsEl.createDiv({ cls: 'pn-banner', text: 'CMUdict not loaded — rhyme search needs it. See the banner above.' });
-      return;
-    }
-
-    const local = searchLocalRhymes(word, this.plugin.cmudictIndex, {
-      letter: options.letter,
-      syllables: options.syllables,
+    letterInput.addEventListener('input', doSearch);
+    syllSelect.addEventListener('change', doSearch);
+    perfectToggle.addEventListener('change', doSearch);
+    nearToggle.addEventListener('change', doSearch);
+    datamuseToggle.addEventListener('change', async () => {
+      await this.plugin.setOnlineSource('rhymes', datamuseToggle.checked);
+      doSearch();
     });
 
-    if (!local) {
-      resultsEl.createDiv({ text: `"${word}" wasn't found in CMUdict, so I can't work out its rhyme sound. Try a different spelling.` });
-      return;
-    }
+    this._prefillRhymes = (word) => { wordInput.value = word; doSearch(); };
+  }
 
-    this.renderRhymeGroup(resultsEl, 'Perfect rhymes', local.perfect, 'pn-rhyme-perfect');
+  // Shared by the Rhymes tab and the Rhymes modal (editor right-click).
+  // filters: { letter, syllables ('', '1'…'4', '5+'), perfect, near, online }.
+  async renderRhymeResults(container, rawWord, filters) {
+    container.empty();
+    const word = (rawWord || '').trim();
+    if (!word) return;
+    const f = Object.assign({ letter: '', syllables: '', perfect: true, near: true, online: false }, filters);
+    const idx = this.plugin.cmudictIndex;
+    const strict = this.plugin.settings.strictRhymeMode;
+    const showNear = f.near && !strict;
 
-    if (!this.plugin.settings.strictRhymeMode) {
-      this.renderRhymeGroup(resultsEl, 'Near / slant rhymes', local.near, 'pn-rhyme-near');
-    }
+    const sylMatch = (n) => {
+      if (!f.syllables) return true;
+      return f.syllables === '5+' ? n >= 5 : n === parseInt(f.syllables, 10);
+    };
+    const letterMatch = (w) => !f.letter || w.toLowerCase().startsWith(f.letter.toLowerCase());
 
-    if (local.perfect.length === 0 && local.near.length === 0) {
-      resultsEl.createDiv({ text: 'No rhymes found in CMUdict for this word with the current filters.' });
-    }
-
-    if (options.includeDatamuse) {
-      const loading = resultsEl.createDiv({ cls: 'pn-rhyme-loading', text: 'Querying Datamuse…' });
-      try {
-        const [perfect, near] = await Promise.all([
-          fetchDatamuseRhymes(word, false),
-          this.plugin.settings.strictRhymeMode ? Promise.resolve([]) : fetchDatamuseRhymes(word, true),
-        ]);
-        loading.remove();
-        const localWords = new Set([...local.perfect, ...local.near].map((w) => w.word));
-        const extraPerfect = perfect.filter((d) => !localWords.has(d.word.toLowerCase()));
-        const extraNear = near.filter((d) => !localWords.has(d.word.toLowerCase()));
-        this.renderRhymeGroup(
-          resultsEl, 'Online — Datamuse (perfect, not already listed above)',
-          extraPerfect.map((d) => ({ word: d.word, syllableCount: d.numSyllables || 0 })),
-          'pn-rhyme-online'
-        );
-        if (!this.plugin.settings.strictRhymeMode) {
-          this.renderRhymeGroup(
-            resultsEl, 'Online — Datamuse (near, not already listed above)',
-            extraNear.map((d) => ({ word: d.word, syllableCount: d.numSyllables || 0 })),
-            'pn-rhyme-online'
-          );
-        }
-      } catch (e) {
-        loading.setText('Datamuse request failed (offline, or the API is unavailable).');
+    const localBody = makeSourceBlock(container, `${word} — CMUdict`, true, true);
+    const local = idx ? searchLocalRhymes(word, idx, { letter: f.letter, syllables: null }) : null;
+    if (!idx) {
+      localBody.createEl('p', { cls: 'pn-vide', text: 'CMUdict not loaded — rhyme search needs it. See the banner above.' });
+    } else if (!local) {
+      localBody.createEl('p', { cls: 'pn-vide', text: `"${word}" wasn't found in CMUdict, so its rhyme sound is unknown. Try another spelling.` });
+    } else {
+      const perfect = f.perfect ? local.perfect.filter((r) => sylMatch(r.syllableCount)).map((r) => r.word) : [];
+      const near = showNear ? local.near.filter((r) => sylMatch(r.syllableCount)).map((r) => r.word) : [];
+      if (perfect.length === 0 && near.length === 0) {
+        localBody.createEl('p', { cls: 'pn-vide', text: 'No word matches these filters.' });
+      }
+      makeWordGroup(localBody, 'Perfect rhymes', perfect, 'pn-mot', idx);
+      if (near.length) {
+        const block = localBody.createDiv({ cls: 'pn-groupe pn-bloc-assonance' });
+        block.createDiv({ cls: 'pn-titre pn-label-assonance', text: `Near / slant rhymes (${near.length})` });
+        const words = block.createDiv({ cls: 'pn-mots' });
+        showWithLimit(words, near, (w) => makeWordChip(words, w, 'pn-mot pn-mot-assonance', idx));
       }
     }
-  }
 
-  // ---- Synonyms tab ----
-  renderSynonymsTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-synonyms-tab' });
-
-    const searchRow = wrap.createDiv({ cls: 'pn-rhyme-search-row' });
-    const wordInput = searchRow.createEl('input', {
-      cls: 'pn-rhyme-input',
-      attr: { type: 'text', placeholder: 'Word…' },
-    });
-    const searchBtn = searchRow.createEl('button', { text: 'Search', cls: 'mod-cta' });
-
-    const optionsRow = wrap.createDiv({ cls: 'pn-options-row' });
-    const datamuseLabel = optionsRow.createEl('label', { cls: 'pn-checkbox-label' });
-    const datamuseCheckbox = datamuseLabel.createEl('input', { attr: { type: 'checkbox' } });
-    datamuseLabel.appendText(' Include Datamuse (online)');
-
-    const synPanel = this.buildRelationPanel(wrap, {
-      kind: 'synonyms',
-      label: 'Synonym',
-      fetchOnline: fetchDatamuseSynonyms,
-      addToDict: (w, s) => this.plugin.addSynonymToPersonalDictionary(w, s),
-      removeFromDict: (w, s) => this.plugin.removeSynonymFromPersonalDictionary(w, s),
-    });
-    const antPanel = this.buildRelationPanel(wrap, {
-      kind: 'antonyms',
-      label: 'Antonym',
-      fetchOnline: fetchDatamuseAntonyms,
-      addToDict: (w, s) => this.plugin.addAntonymToPersonalDictionary(w, s),
-      removeFromDict: (w, s) => this.plugin.removeAntonymFromPersonalDictionary(w, s),
-    });
-
-    const doSearch = async () => {
-      const word = wordInput.value.trim();
-      if (!word) return;
-      await Promise.all([
-        synPanel.search(word, datamuseCheckbox.checked),
-        antPanel.search(word, datamuseCheckbox.checked),
+    if (!f.online) return;
+    const onlineBody = makeSourceBlock(container, `${word} — Datamuse`, true, false);
+    const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
+    try {
+      const [perfect, near] = await Promise.all([
+        f.perfect ? fetchDatamuseRhymes(word, false) : Promise.resolve([]),
+        showNear ? fetchDatamuseRhymes(word, true) : Promise.resolve([]),
       ]);
-    };
-
-    searchBtn.addEventListener('click', doSearch);
-    wordInput.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') doSearch(); });
-  }
-
-  // Builds one Synonyms- or Antonyms-shaped panel: a manual add row plus a
-  // results area (personal dictionary list with remove buttons, and an
-  // optional Datamuse section). `opts.kind` is the personal-dictionary key
-  // ('synonyms' or 'antonyms'). Returns { search(word, includeOnline) }.
-  buildRelationPanel(wrap, opts) {
-    wrap.createEl('h4', { cls: 'pn-relation-panel-title', text: opts.label + 's' });
-
-    const addRow = wrap.createDiv({ cls: 'pn-synonym-add-row' });
-    const addLabel = addRow.createSpan({ cls: 'pn-synonym-add-label', text: `${opts.label} for “…”:` });
-    const addInput = addRow.createEl('input', { cls: 'pn-rhyme-input', attr: { type: 'text' } });
-    const addBtn = addRow.createEl('button', { text: 'Save to my dictionary' });
-
-    const results = wrap.createDiv({ cls: 'pn-rhyme-results' });
-    let currentWord = '';
-
-    const renderPersonalSection = () => {
-      const key = currentWord.toLowerCase().trim();
-      const dict = this.plugin.personalDictionary[opts.kind] || {};
-      const list = dict[key] || [];
-      let section = results.querySelector('.pn-synonym-personal');
-      if (!section) {
-        section = results.createDiv({ cls: 'pn-rhyme-section pn-synonym-personal' });
-        results.prepend(section);
-      }
-      section.empty();
-      section.createEl('h4', { text: `My dictionary (${list.length})` });
-      if (list.length === 0) {
-        section.createDiv({ cls: 'pn-rhyme-word-list', text: `No ${opts.label.toLowerCase()}s saved for this word yet.` });
-      } else {
-        const listEl = section.createDiv({ cls: 'pn-rhyme-word-list' });
-        list.forEach((s) => {
-          const chip = listEl.createSpan({ cls: 'pn-synonym-chip pn-synonym-chip-saved' });
-          chip.appendText(s + ' ');
-          const removeBtn = chip.createEl('span', { cls: 'pn-synonym-remove', text: '×' });
-          removeBtn.addEventListener('click', async () => {
-            await opts.removeFromDict(currentWord, s);
-            renderPersonalSection();
-          });
-        });
-      }
-    };
-
-    const search = async (word, includeOnline) => {
-      currentWord = word;
-      addLabel.setText(`${opts.label} for “${word}”:`);
-      results.empty();
-      renderPersonalSection();
-
-      if (includeOnline) {
-        const loading = results.createDiv({ cls: 'pn-rhyme-loading', text: 'Querying Datamuse…' });
-        try {
-          const found = await opts.fetchOnline(word);
-          loading.remove();
-          const personalSet = new Set(((this.plugin.personalDictionary[opts.kind] || {})[word.toLowerCase()]) || []);
-          const extra = found.filter((s) => !personalSet.has(s.toLowerCase()) && s.toLowerCase() !== word.toLowerCase());
-          const section = results.createDiv({ cls: 'pn-rhyme-section pn-rhyme-online' });
-          section.createEl('h4', { text: `Online — Datamuse (${extra.length})` });
-          const list = section.createDiv({ cls: 'pn-rhyme-word-list' });
-          if (extra.length === 0) {
-            list.setText(`No additional ${opts.label.toLowerCase()}s found.`);
-          } else {
-            extra.forEach((s, i) => {
-              const btn = list.createEl('button', { cls: 'pn-synonym-chip', text: s });
-              btn.setAttr('title', `Click to save "${s}" into your personal dictionary`);
-              btn.addEventListener('click', async () => {
-                const res = await opts.addToDict(word, s);
-                new Notice(res.ok ? `Saved "${s}" to your dictionary` : 'Could not save — see console');
-                if (res.ok) renderPersonalSection();
-              });
-              if (i < extra.length - 1) list.appendText(' ');
-            });
-          }
-        } catch (e) {
-          loading.setText('Datamuse request failed (offline, or the API is unavailable).');
-        }
-      }
-    };
-
-    addBtn.addEventListener('click', async () => {
-      const value = addInput.value.trim();
-      if (!currentWord) { new Notice('Search a word first — the manual field only adds an entry FOR that word.'); return; }
-      if (!value) { new Notice(`Type the ${opts.label.toLowerCase()} to save.`); return; }
-      const res = await opts.addToDict(currentWord, value);
-      if (!res.ok && res.reason === 'self') {
-        new Notice(`"${value}" is the same as "${currentWord}" — a word can't be its own ${opts.label.toLowerCase()}.`);
+      status.remove();
+      const known = new Set(local ? [...local.perfect, ...local.near].map((r) => r.word) : []);
+      const keep = (list) => list
+        .filter((d) => !known.has(d.word.toLowerCase()) && letterMatch(d.word) && sylMatch(d.numSyllables || 0))
+        .map((d) => d.word);
+      const extraPerfect = keep(perfect);
+      const extraNear = keep(near);
+      if (extraPerfect.length === 0 && extraNear.length === 0) {
+        onlineBody.createEl('p', { cls: 'pn-vide', text: 'Nothing more than CMUdict for these filters.' });
         return;
       }
-      new Notice(res.ok ? `Saved "${value}" to your dictionary` : 'Could not save — see console');
-      if (res.ok) { addInput.value = ''; renderPersonalSection(); }
+      makeWordGroup(onlineBody, 'Perfect (not already listed)', extraPerfect, 'pn-mot', idx);
+      if (extraNear.length) {
+        onlineBody.createDiv({ cls: 'pn-titre pn-label-assonance', text: `Near / slant (${extraNear.length})` });
+        const words = onlineBody.createDiv({ cls: 'pn-mots' });
+        showWithLimit(words, extraNear, (w) => makeWordChip(words, w, 'pn-mot pn-mot-assonance', idx));
+      }
+    } catch (e) {
+      status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
+    }
+  }
+  // ---- Synonyms tab ----
+  // Same structure as the French Synonymes tab: "also search online" box,
+  // search form, optional "rhymes with" / syllable filters, then one
+  // collapsible block per source. Online chips can be clicked to leave
+  // them out, then saved to the personal dictionary in one go.
+  renderSynonymsTab(panel) {
+    const sourcesBox = panel.createDiv({ cls: 'pn-sources' });
+    sourcesBox.createSpan({ cls: 'pn-sources-label', text: 'Also search online: ' });
+    const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse', (this.plugin.settings.onlineSources || []).includes('synonyms'));
+
+    const form = panel.createDiv({ cls: 'pn-rime-form' });
+    const wordInput = form.createEl('input', { attr: { type: 'text', placeholder: 'A word… (e.g. bright, sad, light)' } });
+    const searchBtn = form.createEl('button', { text: 'Search' });
+
+    const filters = panel.createDiv({ cls: 'pn-filtres' });
+    const rhymeInput = filters.createEl('input', { cls: 'pn-filtre-lettre', attr: { type: 'text', placeholder: 'Rhymes with… (optional)', style: 'width:180px' } });
+    rhymeInput.setAttr('title', 'Optional: keep only the synonyms/antonyms that also rhyme with this second word — useful when another line has already fixed the rhyme.');
+    const syllSelect = makeSyllableSelect(filters);
+    syllSelect.setAttr('title', 'Keep only synonyms/antonyms with this many syllables — useful to fit a word into a given meter.');
+
+    const results = panel.createDiv({ cls: 'pn-resultats' });
+    const doSearch = () => this.renderSynonymResults(results, wordInput.value, datamuseToggle.checked, rhymeInput.value, syllSelect.value);
+
+    searchBtn.addEventListener('click', doSearch);
+    wordInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+    rhymeInput.addEventListener('input', doSearch);
+    syllSelect.addEventListener('change', doSearch);
+    datamuseToggle.addEventListener('change', async () => {
+      await this.plugin.setOnlineSource('synonyms', datamuseToggle.checked);
+      doSearch();
     });
 
-    return { search };
+    this._prefillSynonyms = (word) => { wordInput.value = word; doSearch(); };
   }
 
+  async renderSynonymResults(container, rawWord, online, rhymeTarget, syllables) {
+    container.empty();
+    const word = (rawWord || '').trim();
+    if (!word) return;
+    const key = word.toLowerCase();
+    const idx = this.plugin.cmudictIndex;
+    const target = (rhymeTarget || '').trim();
+    const applyFilters = (list) => filterBySyllables(filterByRhyme(list, target, idx), syllables, idx);
+    const rerender = () => this.renderSynonymResults(container, rawWord, online, rhymeTarget, syllables);
+
+    // ---- personal dictionary ----
+    const localBody = makeSourceBlock(container, `${word} — my dictionary`, true, true);
+    const dict = this.plugin.personalDictionary || {};
+    const syn = applyFilters((dict.synonyms || {})[key] || []);
+    const ant = applyFilters((dict.antonyms || {})[key] || []);
+    const removable = (kind) => (span, w) => {
+      const x = span.createSpan({ cls: 'pn-tag-chip-x', text: ' ×' });
+      x.setAttr('title', 'Remove from my dictionary');
+      x.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (kind === 'syno') await this.plugin.removeSynonymFromPersonalDictionary(word, w);
+        else await this.plugin.removeAntonymFromPersonalDictionary(word, w);
+        rerender();
+      });
+    };
+    if (syn.length === 0 && ant.length === 0) {
+      localBody.createEl('p', { cls: 'pn-vide', text: (target || syllables) ? 'No saved synonym/antonym matches these filters.' : 'Nothing saved for this word yet.' });
+    } else {
+      makeWordGroup(localBody, 'Synonyms', syn, 'pn-mot pn-mot-syno', idx, { type: 'syno', onChip: removable('syno') });
+      makeWordGroup(localBody, 'Antonyms', ant, 'pn-mot pn-mot-anto', idx, { type: 'anto', onChip: removable('anto') });
+    }
+    // manual entry
+    const addRow = localBody.createDiv({ cls: 'pn-hasard-ligne-form' });
+    const addInput = addRow.createEl('input', { attr: { type: 'text', placeholder: `add a word for "${word}"…` } });
+    const kindWrap = addRow.createDiv({ cls: 'pn-select-wrap' });
+    const kindSelect = kindWrap.createEl('select');
+    kindSelect.createEl('option', { attr: { value: 'syno' }, text: 'Synonym' });
+    kindSelect.createEl('option', { attr: { value: 'anto' }, text: 'Antonym' });
+    kindWrap.createSpan({ cls: 'pn-select-arrow', text: '▾' });
+    const addBtn = addRow.createEl('button', { cls: 'pn-link-btn', text: '+ save' });
+    const doAdd = async () => {
+      const value = addInput.value.trim();
+      if (!value) return;
+      const res = kindSelect.value === 'syno'
+        ? await this.plugin.addSynonymToPersonalDictionary(word, value)
+        : await this.plugin.addAntonymToPersonalDictionary(word, value);
+      if (!res.ok && res.reason === 'self') { new Notice(`"${value}" is the same as "${word}" — a word can't be its own synonym or antonym.`); return; }
+      new Notice(res.ok ? `Saved "${value}" to your dictionary.` : 'Could not save — see console.');
+      if (res.ok) rerender();
+    };
+    addBtn.addEventListener('click', doAdd);
+    addInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doAdd(); });
+
+    if (!online) return;
+
+    // ---- Datamuse ----
+    const onlineBody = makeSourceBlock(container, `${word} — Datamuse`, true, false);
+    const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
+    try {
+      const [s, a] = await Promise.all([fetchDatamuseSynonyms(word), fetchDatamuseAntonyms(word)]);
+      status.remove();
+      const savedSyn = new Set(((dict.synonyms || {})[key] || []).map((w) => w.toLowerCase()));
+      const savedAnt = new Set(((dict.antonyms || {})[key] || []).map((w) => w.toLowerCase()));
+      const synOnline = applyFilters(s.filter((w) => w.toLowerCase() !== key && !savedSyn.has(w.toLowerCase())));
+      const antOnline = applyFilters(a.filter((w) => w.toLowerCase() !== key && !savedAnt.has(w.toLowerCase())));
+      if (synOnline.length === 0 && antOnline.length === 0) {
+        onlineBody.createEl('p', { cls: 'pn-vide', text: `Nothing new found on Datamuse for "${word}".` });
+        return;
+      }
+      const exclSyn = new Set();
+      const exclAnt = new Set();
+      makeWordGroup(onlineBody, 'Synonyms', synOnline, 'pn-mot pn-mot-syno', idx, { type: 'syno', excluded: exclSyn });
+      makeWordGroup(onlineBody, 'Antonyms', antOnline, 'pn-mot pn-mot-anto', idx, { type: 'anto', excluded: exclAnt });
+      const saveBtn = onlineBody.createEl('button', { cls: 'pn-link-btn', text: '💾 Save to my personal dictionary' });
+      saveBtn.setAttr('title', 'Saves everything shown above, except the greyed/struck-through words (click a word to leave it out).');
+      saveBtn.addEventListener('click', async () => {
+        saveBtn.disabled = true;
+        saveBtn.setText('Saving…');
+        let ok = true;
+        for (const w of synOnline) if (!exclSyn.has(w)) ok = (await this.plugin.addSynonymToPersonalDictionary(word, w)).ok && ok;
+        for (const w of antOnline) if (!exclAnt.has(w)) ok = (await this.plugin.addAntonymToPersonalDictionary(word, w)).ok && ok;
+        saveBtn.setText(ok ? 'Saved ✓' : '💾 Retry saving');
+        if (!ok) saveBtn.disabled = false;
+      });
+    } catch (e) {
+      status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
+    }
+  }
   // ---- Definitions tab ----
-  renderDefinitionsTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-definitions-tab' });
+  // Same structure as the French Définitions tab: form (field, Search,
+  // "open on…" link), then a titled result with a framed quick block
+  // (etymology) and one collapsible block per part of speech.
+  renderDefinitionsTab(panel) {
+    const form = panel.createDiv({ cls: 'pn-rime-form pn-defs-form' });
+    const wordInput = form.createEl('input', { attr: { type: 'text', placeholder: 'A word… (e.g. melancholy, canopy, ire)' } });
+    const searchBtn = form.createEl('button', { text: 'Search' });
+    const openLink = form.createEl('a', { cls: 'pn-icon-btn', text: 'Open on Wiktionary ↗', attr: { target: '_blank', rel: 'noopener', href: 'https://en.wiktionary.org/' } });
+    const syncLink = () => {
+      const w = wordInput.value.trim();
+      openLink.setAttr('href', w ? `https://en.wiktionary.org/wiki/${encodeURIComponent(w)}` : 'https://en.wiktionary.org/');
+    };
+    wordInput.addEventListener('input', syncLink);
 
-    const searchRow = wrap.createDiv({ cls: 'pn-rhyme-search-row' });
-    const wordInput = searchRow.createEl('input', {
-      cls: 'pn-rhyme-input',
-      attr: { type: 'text', placeholder: 'Word…' },
-    });
-    const searchBtn = searchRow.createEl('button', { text: 'Look up', cls: 'mod-cta' });
-
-    const results = wrap.createDiv({ cls: 'pn-rhyme-results' });
+    const results = panel.createDiv({ cls: 'pn-resultats' });
 
     const doSearch = async () => {
       const word = wordInput.value.trim();
-      if (!word) return;
       results.empty();
-      const loading = results.createDiv({ cls: 'pn-rhyme-loading', text: 'Looking up Wiktionary…' });
+      if (!word) return;
+      syncLink();
+      results.createDiv({ cls: 'pn-son-label', text: `${word} — Wiktionary` });
+      const zone = results.createDiv();
+      const status = zone.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
 
       let entry = null;
       try {
         entry = await fetchWiktionaryEntry(word);
       } catch (e) {
-        loading.setText('Wiktionary request failed (offline, or the API is unavailable).');
+        status.setText('Wiktionary: search impossible (no connection, site unreachable, or timeout).');
         return;
       }
-      loading.remove();
-
-      const link = results.createEl('a', {
-        cls: 'pn-external-link', text: `View "${word}" on Wiktionary ↗`, attr: { href: '#' },
-      });
-      link.addEventListener('click', (evt) => {
-        evt.preventDefault();
-        window.open(`https://en.wiktionary.org/wiki/${encodeURIComponent(word)}`, '_blank');
-      });
-
+      status.remove();
+      const url = `https://en.wiktionary.org/wiki/${encodeURIComponent(word)}`;
       if (!entry) {
-        results.createDiv({ text: `No English entry found for "${word}" on Wiktionary.` });
+        zone.createEl('p', { cls: 'pn-vide', text: `"${word}" has no English entry on Wiktionary.` });
         return;
       }
+      zone.createEl('a', { cls: 'pn-cnrtl-lien', text: `See "${word}" on Wiktionary →`, attr: { href: url, target: '_blank', rel: 'noopener' } });
 
       if (entry.etymology) {
-        const etySection = results.createDiv({ cls: 'pn-rhyme-section pn-etymology' });
-        etySection.createEl('h4', { text: 'Etymology' });
-        etySection.createDiv({ text: entry.etymology });
+        const block = zone.createDiv({ cls: 'pn-cnrtl-bloc' });
+        block.createDiv({ cls: 'pn-cnrtl-titre', text: 'Etymology' });
+        block.createEl('p', { cls: 'pn-cnrtl-texte', text: entry.etymology });
       }
 
       if (entry.definitions.length === 0) {
-        results.createDiv({ text: 'No definitions parsed for this word — the Wiktionary page may use an unusual layout. Use the link above to read it directly.' });
+        zone.createEl('p', { cls: 'pn-vide', text: 'No definitions parsed for this word — the Wiktionary page may use an unusual layout. Use the link above to read it directly.' });
       }
-
-      for (const group of entry.definitions) {
-        const section = results.createDiv({ cls: 'pn-rhyme-section pn-definition-group' });
-        section.createEl('h4', { text: group.pos });
+      entry.definitions.forEach((group, i) => {
+        const det = zone.createEl('details', { cls: 'pn-cnrtl-details' });
+        if (i === 0) det.setAttr('open', 'true');
+        det.createEl('summary', { cls: 'pn-cnrtl-details-titre', text: group.pos });
+        const body = det.createDiv({ cls: 'pn-cnrtl-texte' });
         const numbered = group.lines.filter((l) => /^\d+\.\s/.test(l));
-        const toShow = numbered.length > 0 ? numbered : group.lines;
-        const list = section.createEl('ol', { cls: 'pn-definition-list' });
-        for (const line of toShow) {
-          list.createEl('li', { text: line.replace(/^\d+\.\s*/, '') });
-        }
-      }
+        const list = body.createEl('ol');
+        (numbered.length > 0 ? numbered : group.lines).forEach((line) => list.createEl('li', { text: line.replace(/^\d+\.\s*/, '') }));
+      });
     };
 
     searchBtn.addEventListener('click', doSearch);
     wordInput.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') doSearch(); });
+
+    this._prefillDefinitions = (word) => { wordInput.value = word; doSearch(); };
   }
-
   // ---- Guide tab (static reference content, no network) ----
-  renderGuideTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-guide-tab' });
-
-    const section = (title, html) => {
-      const s = wrap.createDiv({ cls: 'pn-guide-section' });
-      s.createEl('h3', { text: title });
-      const content = s.createDiv({ cls: 'pn-guide-content' });
-      content.innerHTML = html;
-    };
+  // Same structure as the French Guide: a table of contents box, then
+  // one collapsible section per topic (the first one open).
+  renderGuideTab(panel) {
+    const sections = [];
+    const section = (title, html) => sections.push({ title, html });
 
     section('Counting syllables & meter', `
       <p>English meter counts <strong>stressed feet</strong>, not raw syllables — unlike French,
@@ -1975,246 +2297,512 @@ class PoetsNotebookView extends ItemView {
       per-word tooltip will show which source (CMUdict / override / heuristic) was used, which
       is usually the fastest way to spot the mismatch.</p>
     `);
-  }
 
-  // ---- Inspiration tab ----
-  renderInspirationTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-inspiration-tab' });
-
-    const searchRow = wrap.createDiv({ cls: 'pn-rhyme-search-row' });
-    const wordInput = searchRow.createEl('input', {
-      cls: 'pn-rhyme-input',
-      attr: { type: 'text', placeholder: 'A common word (forest, sea, night, love…)' },
+    const toc = panel.createDiv({ cls: 'pn-guide-sommaire' });
+    toc.createDiv({ cls: 'pn-guide-sommaire-titre', text: 'Contents' });
+    const tocList = toc.createEl('ul');
+    const detailsEls = [];
+    sections.forEach((s, i) => {
+      const link = tocList.createEl('li').createEl('a', { text: s.title, attr: { href: '#' } });
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        detailsEls[i].open = true;
+        detailsEls[i].scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
     });
-    const searchBtn = searchRow.createEl('button', { text: 'Search', cls: 'mod-cta' });
+    sections.forEach((s, i) => {
+      const det = panel.createEl('details', { cls: 'pn-guide-section' });
+      if (i === 0) det.setAttr('open', 'true');
+      det.createEl('summary', { cls: 'pn-guide-titre', text: s.title });
+      const body = det.createDiv({ cls: 'pn-guide-corps' });
+      body.innerHTML = s.html;
+      body.querySelectorAll('p').forEach((el) => el.classList.add('pn-guide-p'));
+      body.querySelectorAll('ul, ol').forEach((el) => el.classList.add('pn-guide-liste'));
+      detailsEls.push(det);
+    });
+  }
+  // ---- Inspiration tab ----
+  // Same structure as the French Inspiration tab: "complete online" box,
+  // search form, then results per source. Words can be clicked to build a
+  // selection (kept across searches) and added to a personal theme or as
+  // rare words — those land in the Notes tab if they have no note.
+  renderInspirationTab(panel) {
+    const sourcesBox = panel.createDiv({ cls: 'pn-sources' });
+    sourcesBox.createSpan({ cls: 'pn-sources-label', text: 'Complete online: ' });
+    const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse (means like)', (this.plugin.settings.onlineSources || []).includes('inspiration'),
+      'Adds loosely related words from Datamuse. Never queried unless checked.');
 
-    const optionsRow = wrap.createDiv({ cls: 'pn-options-row' });
-    const datamuseLabel = optionsRow.createEl('label', { cls: 'pn-checkbox-label' });
-    const datamuseCheckbox = datamuseLabel.createEl('input', { attr: { type: 'checkbox' } });
-    datamuseLabel.appendText(' Include Datamuse (online, "means like")');
+    const form = panel.createDiv({ cls: 'pn-rime-form' });
+    const wordInput = form.createEl('input', { attr: { type: 'text', placeholder: 'A theme… (e.g. forest, sea, night, love, time)' } });
+    const searchBtn = form.createEl('button', { text: 'Search' });
 
-    const results = wrap.createDiv({ cls: 'pn-rhyme-results' });
+    // --- selection kept across searches + action bar ---
+    const selection = new Map(); // lowercase word -> { word, theme, note }
+    const actionBar = panel.createDiv({ cls: 'pn-inspi-action-bar' });
+    actionBar.style.display = 'none';
 
-    const doSearch = () => {
-      const word = wordInput.value.trim();
-      if (!word) return;
-      this.renderInspirationResults(results, word, datamuseCheckbox.checked);
+    const refreshHighlight = () => {
+      panel.querySelectorAll('[data-pn-word]').forEach((el) => el.classList.toggle('pn-selectionne', selection.has(el.dataset.pnWord)));
     };
+    const toggleSelection = (word, theme, note) => {
+      const k = word.toLowerCase();
+      if (selection.has(k)) selection.delete(k); else selection.set(k, { word, theme, note });
+      renderActionBar();
+    };
+    const selectionApi = { has: (k) => selection.has(k), toggle: toggleSelection };
+
+    const renderActionBar = () => {
+      actionBar.empty();
+      if (selection.size === 0) { actionBar.style.display = 'none'; return; }
+      actionBar.style.display = 'flex';
+      const chipsRow = actionBar.createDiv({ cls: 'pn-inspi-selection-chips' });
+      chipsRow.createSpan({ cls: 'pn-sources-label', text: `${selection.size} word${selection.size > 1 ? 's' : ''} selected: ` });
+      [...selection.values()].forEach(({ word }) => {
+        const chip = chipsRow.createSpan({ cls: 'pn-tag-chip' });
+        chip.createSpan({ text: word });
+        const x = chip.createSpan({ cls: 'pn-tag-chip-x', text: ' ×' });
+        x.addEventListener('click', () => { toggleSelection(word); refreshHighlight(); });
+      });
+      const clearBtn = chipsRow.createEl('button', { cls: 'pn-link-btn', text: 'Deselect all' });
+      clearBtn.addEventListener('click', () => { selection.clear(); renderActionBar(); refreshHighlight(); });
+
+      const actionsRow = actionBar.createDiv({ cls: 'pn-inspi-selection-actions' });
+      const themeBtn = actionsRow.createEl('button', { cls: 'pn-hasard-graver-btn', text: '+ Add to a theme' });
+      const rareBtn = actionsRow.createEl('button', { cls: 'pn-hasard-graver-btn', text: '+ Add as rare word(s)' });
+
+      let themeForm = null;
+      themeBtn.addEventListener('click', () => {
+        if (themeForm) { themeForm.remove(); themeForm = null; return; }
+        themeForm = actionBar.createDiv({ cls: 'pn-inspi-ajout-form' });
+        const listId = 'pn-inspi-themes-' + Math.random().toString(36).slice(2, 8);
+        const themeInput = themeForm.createEl('input', { attr: { type: 'text', placeholder: 'theme (e.g. Mountains)', list: listId } });
+        const datalist = themeForm.createEl('datalist', { attr: { id: listId } });
+        ((this.plugin.personalDictionary && this.plugin.personalDictionary.vocabularyThemes) || [])
+          .forEach((t) => t && t.theme && datalist.createEl('option', { attr: { value: t.theme } }));
+        const triggersInput = themeForm.createEl('input', { attr: { type: 'text', placeholder: 'trigger words, comma-separated (if new theme)' } });
+        const okBtn = themeForm.createEl('button', { cls: 'pn-link-btn', text: `Add the ${selection.size} word(s)` });
+        const suggested = [...new Set([...selection.values()].map((v) => v.theme).filter(Boolean))];
+        if (suggested.length === 1) {
+          const sug = themeForm.createDiv({ cls: 'pn-inspi-suggestion' });
+          sug.createSpan({ text: 'Suggestion: ' });
+          const sugBtn = sug.createEl('button', { cls: 'pn-link-btn', text: suggested[0] });
+          sugBtn.addEventListener('click', () => { themeInput.value = suggested[0]; themeInput.focus(); });
+        }
+        const submit = async () => {
+          const theme = themeInput.value.trim();
+          if (!theme) { new Notice('A theme is required.'); return; }
+          const triggers = triggersInput.value.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
+          const words = [...selection.values()];
+          const n = await this.plugin.addThemeWords(theme, triggers, words.map(({ word, note }) => ({ word, note })));
+          new Notice(`Poet's Notebook: ${n} word(s) added to the theme "${theme}".`);
+          selection.clear(); renderActionBar(); refreshHighlight();
+        };
+        okBtn.addEventListener('click', submit);
+        themeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+      });
+
+      rareBtn.addEventListener('click', async () => {
+        let n = 0;
+        for (const { word, note } of selection.values()) if (await this.plugin.addRareWord(word, note || '', [], { quiet: true })) n++;
+        new Notice(`Poet's Notebook: ${n} word(s) added as rare words to your personal dictionary.`);
+        selection.clear(); renderActionBar(); refreshHighlight();
+      });
+    };
+
+    const results = panel.createDiv({ cls: 'pn-resultats' });
+    const doSearch = () => this.renderInspirationResults(results, wordInput.value, datamuseToggle.checked, selectionApi);
 
     searchBtn.addEventListener('click', doSearch);
     wordInput.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') doSearch(); });
+    datamuseToggle.addEventListener('change', () => this.plugin.setOnlineSource('inspiration', datamuseToggle.checked));
+
+    this._prefillInspiration = (word) => { wordInput.value = word; doSearch(); };
   }
 
   // Shared by the Inspiration tab and the Inspiration modal (editor
-  // right-click on a selection). Uses only this.plugin.
-  async renderInspirationResults(results, word, includeDatamuse) {
+  // right-click on a selection). selectionApi is null in the modal.
+  async renderInspirationResults(results, rawWord, includeDatamuse, selectionApi) {
     results.empty();
+    const word = (rawWord || '').trim();
+    if (!word) return;
 
+    const makeSelectable = (el, w, theme, note) => {
+      if (!selectionApi) return;
+      const k = w.toLowerCase();
+      el.dataset.pnWord = k;
+      el.addClass('pn-inspi-cliquable');
+      el.toggleClass('pn-selectionne', selectionApi.has(k));
+      el.addEventListener('click', () => {
+        selectionApi.toggle(w, theme, note);
+        el.toggleClass('pn-selectionne', selectionApi.has(k));
+      });
+    };
+
+    const localBody = makeSourceBlock(results, `${word} — built-in & personal themes`, true, true);
     const themes = findInspiration(word, this.plugin.personalDictionary);
     if (themes.length === 0) {
-      results.createDiv({ text: `No built-in theme is triggered by "${word}" yet. Try a broader word (forest, sea, night, love, time, fire, weather, silence…), or add your own theme to the personal dictionary.` });
+      localBody.createEl('p', {
+        cls: 'pn-vide',
+        text: `No theme is triggered by "${word}" — try a broader word (forest, sea, night, love, time, fire, weather, silence…), or add your own theme to the personal dictionary.`,
+      });
     } else {
       for (const t of themes) {
-        const section = results.createDiv({ cls: 'pn-rhyme-section pn-rhyme-perfect' });
-        section.createEl('h4', { text: `${t.theme} (${t.words.length})` });
-        const list = section.createEl('div', { cls: 'pn-inspiration-word-grid' });
-        for (const w of t.words) {
-          const item = list.createDiv({ cls: 'pn-inspiration-word' });
-          item.createEl('strong', { text: w.word });
-          item.createSpan({ text: ' — ' + w.note });
+        const block = localBody.createDiv({ cls: 'pn-groupe' });
+        block.createDiv({ cls: 'pn-son-label', text: t.theme });
+        const list = block.createDiv({ cls: 'pn-inspi-liste' });
+        for (const entry of (t.words || [])) {
+          const w = typeof entry === 'string' ? entry : entry.word;
+          const note = typeof entry === 'string' ? '' : (entry.note || '');
+          if (!w) continue;
+          const row = list.createDiv({ cls: 'pn-inspi-mot' });
+          const term = row.createSpan({ cls: 'pn-inspi-terme', text: w });
+          if (note) row.createSpan({ cls: 'pn-inspi-note', text: note });
+          makeSelectable(term, w, t.theme, note);
         }
       }
     }
 
-    if (includeDatamuse) {
-      const loading = results.createDiv({ cls: 'pn-rhyme-loading', text: 'Querying Datamuse…' });
-      try {
-        const related = await fetchDatamuseMeansLike(word);
-        loading.remove();
-        const section = results.createDiv({ cls: 'pn-rhyme-section pn-rhyme-online' });
-        section.createEl('h4', { text: `Online — Datamuse, related to "${word}" (${related.length})` });
-        section.createDiv({ cls: 'pn-rhyme-word-list', text: related.length ? related.join(', ') : 'Nothing found.' });
-      } catch (e) {
-        loading.setText('Datamuse request failed (offline, or the API is unavailable).');
-      }
+    if (!includeDatamuse) return;
+    const onlineBody = makeSourceBlock(results, `${word} — Datamuse`, true, false);
+    const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
+    try {
+      const related = await fetchDatamuseMeansLike(word);
+      status.remove();
+      if (related.length === 0) { onlineBody.createEl('p', { cls: 'pn-vide', text: `Nothing found on Datamuse for "${word}".` }); return; }
+      const suggestedTheme = word.charAt(0).toUpperCase() + word.slice(1);
+      makeWordGroup(onlineBody, 'Related words', related, 'pn-mot pn-mot-inspi', this.plugin.cmudictIndex, {
+        extraCls: 'pn-nature-lexical',
+        onChip: (span, w) => makeSelectable(span, w, suggestedTheme, ''),
+      });
+    } catch (e) {
+      status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
     }
   }
   // ---- Random tab ----
-  renderRandomTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-random-tab' });
-
-    // Filter state, kept in closure across re-renders of this tab instance.
+  // Same structure as the French Hasard tab: a "quick draw" banner of
+  // filter shortcuts, two collapsible sections (filter by tags / exclude
+  // tags), the draw zone (counter, button, word, note, tags, actions,
+  // tag presets and form), then "add a rare word" and statistics.
+  renderRandomTab(panel) {
     const state = {
       includeTags: new Set(),
       excludeTags: new Set(),
-      includeMode: 'or', // 'or' | 'and' — only matters with 2+ include tags
+      includeMode: 'or',
       onlyLiked: false,
-      onlyExcluded: false, // review mode: browse only excluded words
+      onlyExcluded: false,
+      hideTagged: false,
+      multiTagged: false,
     };
-    let lastPick = null; // re-rendered in place when its tags/like/excluded change
+    const pool = () => poolWithMeta(this.plugin.personalDictionary);
+    const customTags = (w) => w.tags.filter((t) => t !== (w.theme || 'Untagged'));
+    const filtered = () => filterPool(pool(), state).filter((w) => {
+      const n = customTags(w).length;
+      if (state.hideTagged && n > 0) return false;
+      if (state.multiTagged && n < 2) return false;
+      return true;
+    });
+    const allTags = () => allTagsFromPool(pool());
+    const tagsByFrequency = () => {
+      const counts = new Map();
+      pool().forEach((w) => customTags(w).forEach((t) => counts.set(t, (counts.get(t) || 0) + 1)));
+      return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+    };
 
-    const quickRow = wrap.createDiv({ cls: 'pn-random-quickrow' });
-    const likedPill = quickRow.createEl('button', { cls: 'pn-tag-pill', text: '♥ Liked only' });
-    const reviewPill = quickRow.createEl('button', { cls: 'pn-tag-pill', text: '🚫 Review excluded' });
+    let statsDiv = null;
+    let counterEl = null;
 
-    const includeDetails = wrap.createEl('details', { cls: 'pn-random-filters' });
-    includeDetails.createEl('summary', { text: 'Filter by tag' });
-    const includeModeRow = includeDetails.createDiv({ cls: 'pn-tag-mode-row' });
-    const includeModeBtn = includeModeRow.createEl('button', { cls: 'pn-tag-pill', text: 'Match: any (OR)' });
-    const includePillsRow = includeDetails.createDiv({ cls: 'pn-tag-pills-row' });
+    const filtersDiv = panel.createDiv({ cls: 'pn-hasard-filtres' });
+    const banner = filtersDiv.createDiv({ cls: 'pn-hasard-bandeau' });
+    banner.createDiv({ cls: 'pn-titre', text: 'Quick draw' });
+    const quickDiv = banner.createDiv({ cls: 'pn-hasard-filtres-rapides' });
 
-    const excludeDetails = wrap.createEl('details', { cls: 'pn-random-filters' });
-    excludeDetails.createEl('summary', { text: 'Exclude tags' });
-    const excludePillsRow = excludeDetails.createDiv({ cls: 'pn-tag-pills-row' });
+    const incl = makeCollapsibleSection(filtersDiv, 'Filter by tags', 'pn-hasard-section-inclusion');
+    const inclForm = incl.body.createDiv({ cls: 'pn-hasard-ligne-form' });
+    const inclListId = 'pn-random-taglist-' + Math.random().toString(36).slice(2, 8);
+    const inclInput = inclForm.createEl('input', { attr: { type: 'text', placeholder: 'a tag (or click several pills below)…', list: inclListId } });
+    const inclDatalist = inclForm.createEl('datalist', { attr: { id: inclListId } });
+    const inclAddBtn = inclForm.createEl('button', { cls: 'pn-link-btn', text: '+ add tag' });
+    const inclAllBtn = inclForm.createEl('button', { cls: 'pn-link-btn pn-hasard-voir-tous-tags', text: 'See all tags' });
+    const andLabel = incl.body.createEl('label', { cls: 'pn-hasard-mode-et' });
+    const andCheckbox = andLabel.createEl('input', { attr: { type: 'checkbox' } });
+    andLabel.createSpan({ text: ' All checked tags (AND) rather than at least one (OR)' });
+    const inclChips = incl.body.createDiv({ cls: 'pn-hasard-filtres-chips' });
 
-    const statsLine = wrap.createDiv({ cls: 'pn-random-stats' });
-    const btn = wrap.createEl('button', { text: 'Give me a rare word', cls: 'mod-cta pn-random-btn' });
-    const result = wrap.createDiv({ cls: 'pn-random-result' });
+    const excl = makeCollapsibleSection(filtersDiv, 'Exclude tags', 'pn-hasard-section-exclusion');
+    const exclForm = excl.body.createDiv({ cls: 'pn-hasard-ligne-form' });
+    const exclListId = 'pn-random-excllist-' + Math.random().toString(36).slice(2, 8);
+    const exclInput = exclForm.createEl('input', { attr: { type: 'text', placeholder: 'a tag to exclude (or click several pills)…', list: exclListId } });
+    const exclDatalist = exclForm.createEl('datalist', { attr: { id: exclListId } });
+    const exclAddBtn = exclForm.createEl('button', { cls: 'pn-link-btn', text: '+ exclude' });
+    const exclAllBtn = exclForm.createEl('button', { cls: 'pn-link-btn pn-hasard-voir-tous-tags', text: 'See all tags to exclude' });
+    const exclChips = excl.body.createDiv({ cls: 'pn-hasard-filtres-chips' });
 
-    const currentPool = () => poolWithMeta(this.plugin.personalDictionary);
-    const currentFiltered = () => filterPool(currentPool(), state);
+    incl.setCountBadge(() => state.includeTags.size);
+    excl.setCountBadge(() => state.excludeTags.size);
 
-    const renderTagPills = (rowEl, tags, activeSet, onToggle) => {
-      rowEl.empty();
-      tags.forEach((tag) => {
-        const pill = rowEl.createEl('button', { cls: 'pn-tag-pill', text: tag });
-        if (activeSet.has(tag)) pill.addClass('pn-tag-pill-active');
-        pill.addEventListener('click', () => {
-          if (activeSet.has(tag)) activeSet.delete(tag); else activeSet.add(tag);
-          refreshFilters();
+    const inclPanel = makeAllTagsPanel(incl.body, inclAllBtn,
+      () => allTags().filter((t) => !state.includeTags.has(t)),
+      (t) => { state.includeTags.add(t); refresh(); });
+    const exclPanel = makeAllTagsPanel(excl.body, exclAllBtn,
+      () => allTags().filter((t) => !state.excludeTags.has(t)),
+      (t) => { state.excludeTags.add(t); refresh(); }, 'See all tags to exclude');
+
+    const renderQuick = () => {
+      quickDiv.empty();
+      [
+        { label: '🚫 Explore excluded', on: state.onlyExcluded, color: '#a3831f', toggle: () => { state.onlyExcluded = !state.onlyExcluded; } },
+        { label: '♥ Explore liked', on: state.onlyLiked, color: '#c2185b', toggle: () => { state.onlyLiked = !state.onlyLiked; } },
+        { label: '📭 Hide words already tagged', on: state.hideTagged, color: 'var(--text-muted)', toggle: () => { state.hideTagged = !state.hideTagged; } },
+        { label: '🏷️ Explore multi-tagged', on: state.multiTagged, color: 'var(--text-muted)', toggle: () => { state.multiTagged = !state.multiTagged; } },
+      ].forEach((q) => {
+        const b = quickDiv.createEl('button', { cls: 'pn-hasard-filtre-rapide' + (q.on ? ' pn-hasard-filtre-rapide-actif' : ''), text: q.label });
+        b.style.borderColor = q.color;
+        if (q.on) { b.style.background = q.color; b.style.color = '#fff'; } else { b.style.color = q.color; }
+        b.addEventListener('click', () => { q.toggle(); refresh(); });
+      });
+    };
+
+    const renderStats = () => {
+      if (!statsDiv) return;
+      statsDiv.empty();
+      const all = pool();
+      const excludedN = all.filter((w) => w.excluded).length;
+      const likedN = all.filter((w) => w.liked).length;
+      const untagged = all.filter((w) => customTags(w).length === 0).length;
+      const item = (text, cls) => statsDiv.createSpan({ cls: 'pn-hasard-stat ' + cls, text });
+      item(`${all.length} word(s) in total`, 'pn-hasard-stat-total');
+      item(`${excludedN} excluded`, 'pn-hasard-stat-exclus');
+      item(`${untagged} without a tag`, 'pn-hasard-stat-sanstag');
+      item(`${likedN} liked`, 'pn-hasard-stat-vu');
+      const counts = new Map();
+      all.forEach((w) => customTags(w).forEach((t) => counts.set(t, (counts.get(t) || 0) + 1)));
+      if (counts.size) {
+        const detail = statsDiv.createDiv({ cls: 'pn-hasard-stats-detail' });
+        const bloc = detail.createDiv({ cls: 'pn-hasard-stats-bloc' });
+        bloc.createDiv({ cls: 'pn-titre', text: 'By tag' });
+        const list = bloc.createDiv({ cls: 'pn-hasard-stats-liste' });
+        [...counts.entries()].sort((a, b) => b[1] - a[1]).forEach(([t, n]) => {
+          const chip = list.createSpan({ cls: 'pn-hasard-stats-chip', text: `${t} · ${n}` });
+          const c = tagColor(t);
+          chip.style.borderColor = c; chip.style.color = c;
         });
+      }
+    };
+
+    const refresh = () => {
+      state.includeMode = andCheckbox.checked ? 'and' : 'or';
+      renderQuick();
+      renderStats();
+      incl.render();
+      excl.render();
+      const tags = allTags();
+      inclDatalist.empty();
+      exclDatalist.empty();
+      tags.forEach((t) => {
+        if (!state.includeTags.has(t)) inclDatalist.createEl('option', { attr: { value: t } });
+        if (!state.excludeTags.has(t)) exclDatalist.createEl('option', { attr: { value: t } });
       });
+      inclPanel.render();
+      exclPanel.render();
+      inclChips.empty();
+      if (state.includeTags.size) {
+        inclChips.createSpan({ cls: 'pn-sources-label', text: 'Active filters: ' });
+        [...state.includeTags].forEach((t) => makeTagChip(inclChips, t, () => { state.includeTags.delete(t); refresh(); }));
+      }
+      exclChips.empty();
+      if (state.excludeTags.size) {
+        exclChips.createSpan({ cls: 'pn-sources-label', text: 'Excluded: ' });
+        [...state.excludeTags].forEach((t) => makeTagChip(exclChips, t, () => { state.excludeTags.delete(t); refresh(); }));
+      }
+      if (counterEl) {
+        const n = filtered().length;
+        counterEl.setText(n === 0 ? 'No word matches these filters' : `${n} word${n > 1 ? 's' : ''} match${n > 1 ? '' : 'es'} these filters`);
+      }
+      if (current) renderPresets();
     };
 
-    const refreshFilters = () => {
-      const pool = currentPool();
-      const tags = allTagsFromPool(pool);
-      renderTagPills(includePillsRow, tags, state.includeTags, refreshFilters);
-      renderTagPills(excludePillsRow, tags, state.excludeTags, refreshFilters);
-      includeModeBtn.setText(state.includeMode === 'and' ? 'Match: all (AND)' : 'Match: any (OR)');
-      includeModeRow.style.display = state.includeTags.size > 1 ? 'block' : 'none';
-      likedPill.toggleClass('pn-tag-pill-active', state.onlyLiked);
-      reviewPill.toggleClass('pn-tag-pill-active', state.onlyExcluded);
-      const n = currentFiltered().length;
-      statsLine.setText(`${n} word${n === 1 ? '' : 's'} match${n === 1 ? 'es' : ''} the current filters (${pool.length} total).`);
+    const addFrom = (input, set) => {
+      const t = input.value.trim();
+      if (!t) return;
+      set.add(t);
+      input.value = '';
+      refresh();
+    };
+    inclAddBtn.addEventListener('click', () => addFrom(inclInput, state.includeTags));
+    inclInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addFrom(inclInput, state.includeTags); } });
+    exclAddBtn.addEventListener('click', () => addFrom(exclInput, state.excludeTags));
+    exclInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addFrom(exclInput, state.excludeTags); } });
+    andCheckbox.addEventListener('change', refresh);
+
+    // ---- draw zone ----
+    const zone = panel.createDiv({ cls: 'pn-hasard-zone' });
+    counterEl = zone.createDiv({ cls: 'pn-hasard-compteur-pool' });
+    const drawWrap = zone.createDiv({ cls: 'pn-hasard-bouton-wrap' });
+    const drawBtn = drawWrap.createEl('button', { cls: 'pn-hasard-bouton', text: '🎲 Draw a random word' });
+    const wordEl = zone.createDiv({ cls: 'pn-hasard-mot' });
+    const noteEl = zone.createDiv({ cls: 'pn-hasard-note' });
+    const chipsDiv = zone.createDiv({ cls: 'pn-hasard-tags' });
+    const actions = zone.createDiv({ cls: 'pn-hasard-actions' });
+    actions.style.display = 'none';
+    const defsBtn = actions.createEl('button', { cls: 'pn-link-btn', text: 'See its definition →' });
+    const rhymesBtn = actions.createEl('button', { cls: 'pn-link-btn', text: 'Find its rhymes →' });
+    const likeBtn = actions.createEl('button', { cls: 'pn-link-btn' });
+    const excludeBtn = actions.createEl('button', { cls: 'pn-link-btn pn-btn-exclure' });
+    const presetsDiv = zone.createDiv({ cls: 'pn-hasard-tag-presets' });
+    presetsDiv.style.display = 'none';
+    const allTagsBtn = zone.createEl('button', { cls: 'pn-link-btn pn-hasard-voir-tous-tags', text: 'See all tags' });
+    allTagsBtn.style.display = 'none';
+    const tagForm = zone.createDiv({ cls: 'pn-hasard-tag-ajout' });
+    tagForm.style.display = 'none';
+    const tagListId = 'pn-random-tagadd-' + Math.random().toString(36).slice(2, 8);
+    const tagInput = tagForm.createEl('input', { attr: { type: 'text', placeholder: 'add a tag (e.g. archaic)', list: tagListId } });
+    const tagDatalist = tagForm.createEl('datalist', { attr: { id: tagListId } });
+    const tagAddBtn = tagForm.createEl('button', { cls: 'pn-link-btn', text: '+ tag' });
+
+    let current = null; // pool entry currently shown
+
+    const reloadCurrent = () => {
+      if (!current) return;
+      const fresh = pool().find((w) => w.word.toLowerCase() === current.word.toLowerCase());
+      if (fresh) current = fresh;
+    };
+    const addTag = async (t) => {
+      if (!current || !t) return;
+      await this.plugin.addWordTag(current.word, t);
+      reloadCurrent(); renderCurrent(); refresh();
+    };
+    const allTagsPanel = makeAllTagsPanel(zone, allTagsBtn, () => {
+      const all = tagsByFrequency();
+      return all.length > 6 ? [...all].sort() : [];
+    }, addTag);
+    const renderPresets = () => {
+      presetsDiv.empty();
+      const top = tagsByFrequency().filter((t) => !customTags(current).includes(t)).slice(0, 6);
+      presetsDiv.style.display = top.length ? 'flex' : 'none';
+      top.forEach((t) => {
+        const b = presetsDiv.createEl('button', { cls: 'pn-hasard-preset-btn', text: '+ ' + t });
+        const c = tagColor(t);
+        b.style.borderColor = c; b.style.color = c;
+        b.addEventListener('click', () => addTag(t));
+      });
+      allTagsPanel.render();
+      tagDatalist.empty();
+      allTags().forEach((t) => tagDatalist.createEl('option', { attr: { value: t } }));
     };
 
-    likedPill.addEventListener('click', () => { state.onlyLiked = !state.onlyLiked; refreshFilters(); });
-    reviewPill.addEventListener('click', () => { state.onlyExcluded = !state.onlyExcluded; refreshFilters(); });
-    includeModeBtn.addEventListener('click', () => {
-      state.includeMode = state.includeMode === 'and' ? 'or' : 'and';
-      refreshFilters();
+    const renderCurrent = () => {
+      if (!current) return;
+      wordEl.setText(current.word);
+      noteEl.empty();
+      if (current.note) noteEl.createDiv({ cls: 'pn-hasard-note-partie', text: current.note });
+      chipsDiv.empty();
+      const theme = current.theme || 'Untagged';
+      const themeChip = chipsDiv.createSpan({ cls: 'pn-tag-chip', text: theme });
+      themeChip.setAttr('title', 'Theme (always a tag)');
+      customTags(current).forEach((t) => makeTagChip(chipsDiv, t, async () => {
+        await this.plugin.removeWordTag(current.word, t);
+        reloadCurrent(); renderCurrent(); refresh();
+      }));
+      likeBtn.setText(current.liked ? '♥ Liked (undo)' : '♡ Like');
+      excludeBtn.setText(current.excluded ? '↩ Draw this word again' : '🚫 Stop drawing this word');
+      actions.style.display = 'flex';
+      tagForm.style.display = 'flex';
+      renderPresets();
+    };
+
+    const draw = () => {
+      const list = filtered();
+      if (list.length === 0) {
+        current = null;
+        wordEl.setText('No word available with these filters.');
+        noteEl.empty(); chipsDiv.empty(); presetsDiv.empty();
+        presetsDiv.style.display = 'none';
+        actions.style.display = 'none';
+        tagForm.style.display = 'none';
+        allTagsBtn.style.display = 'none';
+        return;
+      }
+      current = list[Math.floor(Math.random() * list.length)];
+      renderCurrent();
+    };
+
+    drawBtn.addEventListener('click', draw);
+    defsBtn.addEventListener('click', () => {
+      if (!current) return;
+      this.switchTab('definitions');
+      if (this._prefillDefinitions) this._prefillDefinitions(current.word);
+    });
+    rhymesBtn.addEventListener('click', () => {
+      if (!current) return;
+      this.switchTab('rhymes');
+      if (this._prefillRhymes) this._prefillRhymes(current.word);
+    });
+    likeBtn.addEventListener('click', async () => {
+      if (!current) return;
+      await this.plugin.toggleWordLiked(current.word);
+      reloadCurrent(); renderCurrent(); refresh();
+    });
+    excludeBtn.addEventListener('click', async () => {
+      if (!current) return;
+      const wasExcluded = current.excluded;
+      await this.plugin.toggleWordExcluded(current.word);
+      if (!wasExcluded) { new Notice(`"${current.word}" won't be drawn anymore.`); refresh(); draw(); return; }
+      reloadCurrent(); renderCurrent(); refresh();
+    });
+    tagAddBtn.addEventListener('click', async () => { await addTag(tagInput.value.trim()); tagInput.value = ''; });
+    tagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tagAddBtn.click(); });
+
+    // ---- add a rare word by hand ----
+    const addDetails = panel.createEl('details', { cls: 'pn-hasard-ajout' });
+    addDetails.createEl('summary', { text: '+ Add a rare word by hand' });
+    const addForm = addDetails.createDiv({ cls: 'pn-hasard-ajout-form' });
+    const inWord = addForm.createEl('input', { attr: { type: 'text', placeholder: 'word' } });
+    const inNote = addForm.createEl('input', { attr: { type: 'text', placeholder: 'short definition (optional)' } });
+    const inTags = addForm.createEl('input', { attr: { type: 'text', placeholder: 'tags, comma-separated (optional)' } });
+    const addWordBtn = addForm.createEl('button', { cls: 'pn-link-btn', text: 'Add to my personal dictionary' });
+    addWordBtn.addEventListener('click', async () => {
+      const w = inWord.value.trim();
+      if (!w) { new Notice('A word is required.'); return; }
+      const tags = inTags.value.split(',').map((t) => t.trim()).filter(Boolean);
+      if (!(await this.plugin.addRareWord(w, inNote.value.trim(), tags))) return;
+      inWord.value = ''; inNote.value = ''; inTags.value = '';
+      refresh();
     });
 
-    const renderCard = (pick) => {
-      lastPick = pick;
-      result.empty();
-      const card = result.createDiv({ cls: 'pn-rhyme-section pn-rhyme-perfect pn-random-card' });
-      card.createEl('h2', { text: pick.word });
-      card.createDiv({ cls: 'pn-random-note', text: pick.note });
+    // ---- statistics ----
+    const statsDetails = panel.createEl('details', { cls: 'pn-hasard-stats-details' });
+    statsDetails.createEl('summary', { text: 'Show statistics' });
+    statsDiv = statsDetails.createDiv({ cls: 'pn-hasard-stats' });
+    statsDetails.addEventListener('toggle', () => { if (statsDetails.open) renderStats(); });
 
-      const tagsRow = card.createDiv({ cls: 'pn-random-tags' });
-      pick.tags.forEach((tag) => {
-        const isTheme = tag === pick.theme;
-        const chip = tagsRow.createSpan({ cls: 'pn-tag-chip' + (isTheme ? ' pn-tag-chip-theme' : ''), text: tag });
-        if (!isTheme) {
-          const remove = chip.createSpan({ cls: 'pn-tag-chip-remove', text: ' ✕' });
-          remove.addEventListener('click', async () => {
-            await this.plugin.removeWordTag(pick.word, tag);
-            renderCard({ ...pick, tags: pick.tags.filter((t) => t !== tag) });
-            refreshFilters();
-          });
-        }
-      });
-      const addTagRow = card.createDiv({ cls: 'pn-random-add-tag' });
-      const addTagInput = addTagRow.createEl('input', { attr: { type: 'text', placeholder: 'Add a tag…' } });
-      const addTagBtn = addTagRow.createEl('button', { cls: 'pn-icon-btn', text: '+' });
-      const doAddTag = async () => {
-        const t = addTagInput.value.trim();
-        if (!t) return;
-        await this.plugin.addWordTag(pick.word, t);
-        addTagInput.value = '';
-        renderCard({ ...pick, tags: Array.from(new Set([...pick.tags, t])) });
-        refreshFilters();
-      };
-      addTagBtn.addEventListener('click', doAddTag);
-      addTagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doAddTag(); });
-
-      const statusRow = card.createDiv({ cls: 'pn-random-status-row' });
-      const likeBtn = statusRow.createEl('button', { cls: 'pn-tag-pill' + (pick.liked ? ' pn-tag-pill-active' : ''), text: '♥ Liked' });
-      likeBtn.addEventListener('click', async () => {
-        const liked = await this.plugin.toggleWordLiked(pick.word);
-        renderCard({ ...pick, liked });
-        refreshFilters();
-      });
-      const excludeBtn = statusRow.createEl('button', { cls: 'pn-tag-pill' + (pick.excluded ? ' pn-tag-pill-active' : ''), text: '🚫 Exclude from draws' });
-      excludeBtn.addEventListener('click', async () => {
-        const excluded = await this.plugin.toggleWordExcluded(pick.word);
-        renderCard({ ...pick, excluded });
-        refreshFilters();
-      });
-
-      const linkRow = card.createDiv({ cls: 'pn-random-links' });
-      const defLink = linkRow.createEl('a', { text: 'Look up in Definitions →', attr: { href: '#' } });
-      defLink.addEventListener('click', (evt) => {
-        evt.preventDefault();
-        this.activeTab = 'definitions';
-        this.render();
-        setTimeout(() => {
-          const input = this.containerEl.querySelector('.pn-definitions-tab .pn-rhyme-input');
-          if (input) { input.value = pick.word; input.focus(); }
-        }, 0);
-      });
-      const rhymeLink = linkRow.createEl('a', { text: 'Find rhymes →', attr: { href: '#' } });
-      rhymeLink.addEventListener('click', (evt) => {
-        evt.preventDefault();
-        this.activeTab = 'rhymes';
-        this.render();
-        setTimeout(() => {
-          const input = this.containerEl.querySelector('.pn-rhymes-tab .pn-rhyme-input');
-          if (input) { input.value = pick.word; input.focus(); }
-        }, 0);
-      });
-    };
-
-    btn.addEventListener('click', () => {
-      const pool = currentFiltered();
-      if (pool.length === 0) { result.empty(); result.setText('No word matches the current filters.'); return; }
-      const pick = pool[Math.floor(Math.random() * pool.length)];
-      renderCard(pick);
-    });
-
-    refreshFilters();
+    refresh();
+    draw();
   }
 
   // ---- Notes tab ----
-  // Lists personal-dictionary words that have no note yet (rareWords and
-  // vocabularyThemes words), each with an inline field to add one.
-  // Built-in themes always carry a note, so only personal entries show up.
-  // Mirrors the French plugin's Notes tab.
-  renderNotesTab(body) {
-    const wrap = body.createDiv({ cls: 'pn-notes-tab' });
-    const refreshBtn = wrap.createEl('button', { cls: 'pn-icon-btn', text: '↻ Refresh list' });
+  // Same structure as the French Notes tab: lists personal-dictionary
+  // words that have no note yet (rareWords and vocabularyThemes words),
+  // each with an inline field to add one. Built-in themes always carry a
+  // note, so only personal entries show up. Refreshed on each tab visit.
+  renderNotesTab(panel) {
+    const refreshBtn = panel.createEl('button', { cls: 'pn-link-btn', text: '↻ Refresh the list' });
 
-    const rareSection = wrap.createDiv({ cls: 'pn-rhyme-section' });
-    rareSection.createEl('h4', { text: 'Rare words without a note' });
-    const rareList = rareSection.createDiv({ cls: 'pn-notes-list' });
+    const rareSection = panel.createDiv({ cls: 'pn-groupe' });
+    rareSection.createDiv({ cls: 'pn-son-label', text: 'Rare words without a note' });
+    const rareList = rareSection.createDiv({ cls: 'pn-inspi-liste' });
 
-    const themeSection = wrap.createDiv({ cls: 'pn-rhyme-section' });
-    themeSection.createEl('h4', { text: 'Theme words without a note' });
-    const themeList = themeSection.createDiv({ cls: 'pn-notes-list' });
+    const themeSection = panel.createDiv({ cls: 'pn-groupe' });
+    themeSection.createDiv({ cls: 'pn-son-label', text: 'Theme words without a note' });
+    const themeList = themeSection.createDiv({ cls: 'pn-inspi-liste' });
 
     const dict = () => this.plugin.personalDictionary || {};
 
     const renderEditRow = (container, word, subText, save) => {
-      const row = container.createDiv({ cls: 'pn-notes-row' });
-      row.createEl('strong', { text: word });
-      if (subText) row.createSpan({ cls: 'pn-notes-sub', text: subText });
-      const input = row.createEl('input', {
-        cls: 'pn-notes-input',
-        attr: { type: 'text', placeholder: 'note / short definition' },
-      });
-      const btn = row.createEl('button', { text: 'Save' });
+      const row = container.createDiv({ cls: 'pn-inspi-mot' });
+      row.createSpan({ cls: 'pn-inspi-terme', text: word });
+      if (subText) row.createSpan({ cls: 'pn-inspi-note', text: subText });
+      const input = row.createEl('input', { attr: { type: 'text', placeholder: 'note / short definition' } });
+      const btn = row.createEl('button', { cls: 'pn-link-btn', text: 'Save' });
       const submit = async () => {
         const note = input.value.trim();
         if (!note) return;
@@ -2242,7 +2830,7 @@ class PoetsNotebookView extends ItemView {
           else rare[i].note = note;
         });
       });
-      if (rareCount === 0) rareList.createDiv({ cls: 'pn-placeholder', text: 'All your rare words have a note.' });
+      if (rareCount === 0) rareList.createEl('p', { cls: 'pn-vide', text: 'All your rare words have a note.' });
 
       const themes = Array.isArray(dict().vocabularyThemes) ? dict().vocabularyThemes : [];
       let themeCount = 0;
@@ -2258,11 +2846,12 @@ class PoetsNotebookView extends ItemView {
           });
         });
       });
-      if (themeCount === 0) themeList.createDiv({ cls: 'pn-placeholder', text: 'All words in your personal themes have a note.' });
+      if (themeCount === 0) themeList.createEl('p', { cls: 'pn-vide', text: 'All words in your personal themes have a note.' });
     };
 
     rerender();
     refreshBtn.addEventListener('click', rerender);
+    this._refreshNotes = rerender;
   }
 }
 
@@ -2280,12 +2869,11 @@ class RhymeModal extends Modal {
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass('pn-modal');
+    contentEl.addClass('poets-notebook-view');
     contentEl.createEl('h3', { text: `Rhymes for "${this.word}"` });
-    const results = contentEl.createDiv({ cls: 'pn-rhyme-results' });
-    PoetsNotebookView.prototype.runRhymeSearch.call(
-      { plugin: this.plugin, renderRhymeGroup: PoetsNotebookView.prototype.renderRhymeGroup },
-      this.word, { letter: '', syllables: null, includeDatamuse: false }, results
+    const results = contentEl.createDiv({ cls: 'pn-resultats' });
+    PoetsNotebookView.prototype.renderRhymeResults.call(
+      { plugin: this.plugin }, results, this.word, { online: false }
     );
   }
   onClose() { this.contentEl.empty(); }
@@ -2299,11 +2887,11 @@ class InspirationModal extends Modal {
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass('pn-modal');
+    contentEl.addClass('poets-notebook-view');
     contentEl.createEl('h3', { text: `Inspiration around "${this.word}"` });
-    const results = contentEl.createDiv({ cls: 'pn-rhyme-results' });
+    const results = contentEl.createDiv({ cls: 'pn-resultats' });
     PoetsNotebookView.prototype.renderInspirationResults.call(
-      { plugin: this.plugin }, results, this.word, false
+      { plugin: this.plugin }, results, this.word, false, null
     );
   }
   onClose() { this.contentEl.empty(); }
@@ -2540,6 +3128,61 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
     entry.excluded = !entry.excluded;
     await this.savePersonalDictionary();
     return entry.excluded;
+  }
+
+  // Rare word (Random tab form, Inspiration selection). Updates the note
+  // and merges tags if the word is already there. Returns true on success.
+  async addRareWord(word, note, tags, opts) {
+    const w = (word || '').trim();
+    if (!w) return false;
+    const d = this.personalDictionary;
+    if (!Array.isArray(d.rareWords)) d.rareWords = [];
+    const i = d.rareWords.findIndex((e) => normalizeWordKey(typeof e === 'string' ? e : e && e.word) === normalizeWordKey(w));
+    if (i >= 0) {
+      const e = typeof d.rareWords[i] === 'string' ? { word: d.rareWords[i] } : d.rareWords[i];
+      if (note && !e.note) e.note = note;
+      d.rareWords[i] = e;
+    } else {
+      d.rareWords.push(note ? { word: w, note } : { word: w });
+    }
+    for (const t of (tags || [])) this._ensureWordMetaEntry(w).tags.includes(t) || this._ensureWordMetaEntry(w).tags.push(t);
+    const ok = await this.savePersonalDictionary();
+    if (!(opts && opts.quiet)) new Notice(ok ? `"${w}" added to your personal dictionary.` : 'Could not save — see console.');
+    return ok;
+  }
+
+  // Adds words to a personal vocabulary theme, creating it (with the given
+  // trigger words) if needed. Returns how many words were new.
+  async addThemeWords(theme, triggers, words) {
+    const d = this.personalDictionary;
+    if (!Array.isArray(d.vocabularyThemes)) d.vocabularyThemes = [];
+    let t = d.vocabularyThemes.find((x) => x && (x.theme || '').toLowerCase() === theme.toLowerCase());
+    if (!t) {
+      t = { theme, triggers: triggers.length ? triggers : [theme.toLowerCase()], words: [] };
+      d.vocabularyThemes.push(t);
+    } else if (triggers.length) {
+      t.triggers = Array.from(new Set([...(t.triggers || []), ...triggers]));
+    }
+    if (!Array.isArray(t.words)) t.words = [];
+    const have = new Set(t.words.map((e) => normalizeWordKey(typeof e === 'string' ? e : e && e.word)));
+    let n = 0;
+    for (const { word, note } of words) {
+      if (have.has(normalizeWordKey(word))) continue;
+      t.words.push(note ? { word, note } : { word });
+      have.add(normalizeWordKey(word));
+      n++;
+    }
+    await this.savePersonalDictionary();
+    return n;
+  }
+
+  // Remembers which online sources are ticked, per tab ('rhymes',
+  // 'inspiration', 'synonyms'), like the French plugin does.
+  async setOnlineSource(kind, on) {
+    const set = new Set(this.settings.onlineSources || []);
+    if (on) set.add(kind); else set.delete(kind);
+    this.settings.onlineSources = [...set];
+    await this.saveSettings();
   }
 
   async addSynonymToPersonalDictionary(word, synonym) {
