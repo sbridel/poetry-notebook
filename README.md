@@ -182,21 +182,28 @@ given sound the way the French plugin's orthographic scan can.
    Poet's Notebook").
 
 ## Setting up CMUdict
+CMUdict gives accurate syllable counts, stress, meter and rhyme detection,
+and is required for Sonorities. **It installs itself:** when no
+`cmudict.dict` is found in the vault, the plugin downloads a compressed copy
+(about 1 MB) attached to its own GitHub release, checks it, and saves it as
+`<vault>/.obsidian/plugins/poetry-notebook/cmudict.dict`. This happens once,
+in the background; until then (or offline) syllable counts use an
+approximate heuristic, and the download is retried at the next start.
 
-The plugin works without CMUdict, using an approximate heuristic instead,
-but CMUdict gives much more accurate syllable counts, stress, meter, and
-rhyme detection — and is required for Sonorities.
+**Network use:** this download, and the online lookups you tick yourself
+(Datamuse, Free Dictionary API, Wiktionary), are the only requests the
+plugin makes. Nothing about your notes is sent anywhere.
 
-1. Download `cmudict.dict` from the official repository:
-   https://github.com/cmusphinx/cmudict
-2. Place it in your vault at any of the following (checked in this order):
-   - `<vault>/.obsidian/plugins/poetry-notebook/cmudict.dict`
-   - `<vault>/.obsidian/cmudict.dict`
-   - `<vault>/cmudict.dict` (vault root)
-   - anywhere else in the vault — the plugin falls back to a recursive
-     filename search
-3. In Settings → Poet's Notebook, click "Reload CMUdict" (or just reopen the
-   panel).
+You can still provide the file yourself (e.g. offline): download
+`cmudict.dict` from https://github.com/cmusphinx/cmudict and place it at any
+of these places (checked in this order):
+- `<vault>/.obsidian/plugins/poetry-notebook/cmudict.dict`
+- `<vault>/.obsidian/cmudict.dict`
+- `<vault>/cmudict.dict` (vault root)
+- anywhere else in the vault — the plugin falls back to a recursive
+  filename search
+
+then click Settings → Poet's Notebook → "Reload CMUdict".
 
 CMUdict is public domain / unrestricted for research and commercial use.
 

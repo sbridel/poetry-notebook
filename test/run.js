@@ -16,6 +16,7 @@ require('./test-forms')(engine);
 require('./test-sonorities')(engine);
 require('./test-online')(engine);
 require('./test-dictionary')(engine);
+require('./test-cmudict')(engine);
 require('./test-view')(engine);
 
 summary();

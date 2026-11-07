@@ -57,3 +57,35 @@ async function findVaultFileWithPath(app, manifest, filenames, overridePath) {
   return null;
 }
 
+
+// ------------------------------------------------------------
+// CMUdict automatic download (like the French plugin's base dictionary):
+// when no cmudict.dict is found in the vault, the plugin fetches the
+// gzipped copy attached to its own GitHub release (CMUdict is public
+// domain), checks it, and saves it in the plugin folder. Disclosed in the
+// README; one attempt per session, never blocking the plugin's start-up.
+// ------------------------------------------------------------
+const CMUDICT_RELEASE = '1.5.0'; // release whose cmudict.dict.gz is used; change only if CMUdict changes
+const CMUDICT_URL = `https://github.com/sbridel/poetry-notebook/releases/download/${CMUDICT_RELEASE}/cmudict.dict.gz`;
+
+async function gunzipToText(bytes) {
+  if (typeof DecompressionStream === 'function') {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return await new Response(stream).text();
+  }
+  const zlib = require('zlib'); // desktop (Electron) fallback if the web API is missing
+  return zlib.gunzipSync(Buffer.from(bytes)).toString('utf-8');
+}
+
+// Downloads, validates (decompresses and indexes, at least 100k words)
+// BEFORE writing, so a broken download never replaces anything.
+// Returns { text, index } or throws.
+async function downloadCmudict(app, manifest) {
+  const res = await requestUrl({ url: CMUDICT_URL, throw: false });
+  if (!res || res.status !== 200 || !res.arrayBuffer) throw new Error(`HTTP ${res && res.status}`);
+  const text = await gunzipToText(res.arrayBuffer);
+  const index = buildCmudictIndex(text);
+  if (!index || index.size < 100000) throw new Error('unexpected CMUdict file');
+  await app.vault.adapter.write(`${app.vault.configDir}/plugins/${manifest.id}/cmudict.dict`, text);
+  return { text, index };
+}

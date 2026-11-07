@@ -35,15 +35,18 @@ class PoetsNotebookSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Reload CMUdict')
-      .setDesc('Re-scan the vault for cmudict.dict after adding or moving the file.')
+      .setDesc('Re-scan the vault for cmudict.dict after adding or moving the file. If none is found, it is downloaded from this plugin\'s GitHub release.')
       .addButton((b) => b
         .setButtonText('Reload')
         .onClick(async () => {
           await this.plugin.loadCmudict();
           this.plugin.sonorityBaseline = buildPhonemeFrequencyBaseline(this.plugin.cmudictIndex);
-          new Notice(this.plugin.cmudictIndex
-            ? `CMUdict loaded: ${this.plugin.cmudictIndex.size} words`
-            : 'CMUdict not found in this vault.');
+          if (this.plugin.cmudictIndex) {
+            new Notice(`CMUdict loaded: ${this.plugin.cmudictIndex.size} words`);
+          } else {
+            this.plugin._cmudictDownloadFailed = false;
+            await this.plugin.fetchCmudictIfMissing();
+          }
         }));
 
     containerEl.createEl('h3', { text: 'Personal dictionary' });

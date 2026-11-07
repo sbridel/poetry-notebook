@@ -43,8 +43,10 @@ class PoetsNotebookView extends ItemView {
     if (!this.plugin.cmudictIndex) {
       const banner = container.createDiv({ cls: 'pn-banner' });
       banner.setText(
-        'CMUdict not found in this vault. Syllable/stress accuracy will fall back to an approximate heuristic. ' +
-        'Place a cmudict.dict file at the vault root, in .obsidian/, or in this plugin\'s folder, then reopen this panel.'
+        (this.plugin._cmudictDownloading
+          ? 'Downloading CMUdict… syllable counts are approximate until it is installed.'
+          : 'CMUdict not available yet: syllable/stress counts are approximate. It is downloaded automatically when online ' +
+            '(or place a cmudict.dict file in the vault and use Settings → Reload CMUdict).')
       );
     }
 

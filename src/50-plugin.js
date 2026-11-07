@@ -27,6 +27,9 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
 
     this.addSettingTab(new PoetsNotebookSettingTab(this.app, this));
 
+    // No CMUdict in the vault: fetch it once in the background.
+    if (!this.cmudictIndex) this.app.workspace.onLayoutReady(() => this.fetchCmudictIfMissing());
+
     // Right-click on a single selected word in the editor.
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor) => {
       const word = singleWordFromSelection(editor.getSelection());
@@ -51,6 +54,27 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
     } catch (e) {
       console.error("Poet's Notebook: failed to load CMUdict", e);
       this.cmudictIndex = null;
+    }
+  }
+
+  // Not found in the vault: download it in the background (one attempt
+  // per session), then refresh the open panels.
+  async fetchCmudictIfMissing() {
+    if (this.cmudictIndex || this._cmudictDownloadFailed || this._cmudictDownloading) return;
+    this._cmudictDownloading = true;
+    new Notice("Poet's Notebook: downloading CMUdict (about 1 MB, once)…");
+    try {
+      const { index } = await downloadCmudict(this.app, this.manifest);
+      this.cmudictIndex = index;
+      this.sonorityBaseline = buildPhonemeFrequencyBaseline(index);
+      new Notice(`Poet's Notebook: CMUdict installed (${index.size} words).`);
+      this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => leaf.view && leaf.view.render && leaf.view.render());
+    } catch (e) {
+      this._cmudictDownloadFailed = true;
+      console.warn("Poet's Notebook: CMUdict download failed", e);
+      new Notice("Poet's Notebook: CMUdict could not be downloaded (offline?) — approximate syllable counts for now; next try at the next start.");
+    } finally {
+      this._cmudictDownloading = false;
     }
   }
 

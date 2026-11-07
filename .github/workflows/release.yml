@@ -49,6 +49,12 @@ jobs:
         if: steps.version.outputs.exists == 'false'
         run: node test/run.js
 
+      # CMUdict (public domain), gzipped, downloaded by the plugin on first
+      # start when no cmudict.dict is in the vault.
+      - name: Compress CMUdict
+        if: steps.version.outputs.exists == 'false'
+        run: gzip -9 -c cmudict.dict > cmudict.dict.gz
+
       - name: Generate Artifact Attestation
         if: steps.version.outputs.exists == 'false'
         uses: actions/attest-build-provenance@v1
@@ -57,6 +63,7 @@ jobs:
             main.js
             manifest.json
             styles.css
+            cmudict.dict.gz
 
       - name: Create GitHub Release
         if: steps.version.outputs.exists == 'false'
@@ -70,5 +77,6 @@ jobs:
             main.js
             manifest.json
             styles.css
+            cmudict.dict.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

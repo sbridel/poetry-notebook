@@ -856,6 +856,38 @@ async function findVaultFileWithPath(app, manifest, filenames, overridePath) {
   return null;
 }
 
+
+// ------------------------------------------------------------
+// CMUdict automatic download (like the French plugin's base dictionary):
+// when no cmudict.dict is found in the vault, the plugin fetches the
+// gzipped copy attached to its own GitHub release (CMUdict is public
+// domain), checks it, and saves it in the plugin folder. Disclosed in the
+// README; one attempt per session, never blocking the plugin's start-up.
+// ------------------------------------------------------------
+const CMUDICT_RELEASE = '1.5.0'; // release whose cmudict.dict.gz is used; change only if CMUdict changes
+const CMUDICT_URL = `https://github.com/sbridel/poetry-notebook/releases/download/${CMUDICT_RELEASE}/cmudict.dict.gz`;
+
+async function gunzipToText(bytes) {
+  if (typeof DecompressionStream === 'function') {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return await new Response(stream).text();
+  }
+  const zlib = require('zlib'); // desktop (Electron) fallback if the web API is missing
+  return zlib.gunzipSync(Buffer.from(bytes)).toString('utf-8');
+}
+
+// Downloads, validates (decompresses and indexes, at least 100k words)
+// BEFORE writing, so a broken download never replaces anything.
+// Returns { text, index } or throws.
+async function downloadCmudict(app, manifest) {
+  const res = await requestUrl({ url: CMUDICT_URL, throw: false });
+  if (!res || res.status !== 200 || !res.arrayBuffer) throw new Error(`HTTP ${res && res.status}`);
+  const text = await gunzipToText(res.arrayBuffer);
+  const index = buildCmudictIndex(text);
+  if (!index || index.size < 100000) throw new Error('unexpected CMUdict file');
+  await app.vault.adapter.write(`${app.vault.configDir}/plugins/${manifest.id}/cmudict.dict`, text);
+  return { text, index };
+}
 // ============================================================
 // Datamuse: synonyms
 // ============================================================
@@ -1730,8 +1762,10 @@ class PoetsNotebookView extends ItemView {
     if (!this.plugin.cmudictIndex) {
       const banner = container.createDiv({ cls: 'pn-banner' });
       banner.setText(
-        'CMUdict not found in this vault. Syllable/stress accuracy will fall back to an approximate heuristic. ' +
-        'Place a cmudict.dict file at the vault root, in .obsidian/, or in this plugin\'s folder, then reopen this panel.'
+        (this.plugin._cmudictDownloading
+          ? 'Downloading CMUdict… syllable counts are approximate until it is installed.'
+          : 'CMUdict not available yet: syllable/stress counts are approximate. It is downloaded automatically when online ' +
+            '(or place a cmudict.dict file in the vault and use Settings → Reload CMUdict).')
       );
     }
 
@@ -3455,15 +3489,18 @@ class PoetsNotebookSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Reload CMUdict')
-      .setDesc('Re-scan the vault for cmudict.dict after adding or moving the file.')
+      .setDesc('Re-scan the vault for cmudict.dict after adding or moving the file. If none is found, it is downloaded from this plugin\'s GitHub release.')
       .addButton((b) => b
         .setButtonText('Reload')
         .onClick(async () => {
           await this.plugin.loadCmudict();
           this.plugin.sonorityBaseline = buildPhonemeFrequencyBaseline(this.plugin.cmudictIndex);
-          new Notice(this.plugin.cmudictIndex
-            ? `CMUdict loaded: ${this.plugin.cmudictIndex.size} words`
-            : 'CMUdict not found in this vault.');
+          if (this.plugin.cmudictIndex) {
+            new Notice(`CMUdict loaded: ${this.plugin.cmudictIndex.size} words`);
+          } else {
+            this.plugin._cmudictDownloadFailed = false;
+            await this.plugin.fetchCmudictIfMissing();
+          }
         }));
 
     containerEl.createEl('h3', { text: 'Personal dictionary' });
@@ -3517,6 +3554,9 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
 
     this.addSettingTab(new PoetsNotebookSettingTab(this.app, this));
 
+    // No CMUdict in the vault: fetch it once in the background.
+    if (!this.cmudictIndex) this.app.workspace.onLayoutReady(() => this.fetchCmudictIfMissing());
+
     // Right-click on a single selected word in the editor.
     this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor) => {
       const word = singleWordFromSelection(editor.getSelection());
@@ -3541,6 +3581,27 @@ module.exports = class PoetsNotebookPlugin extends Plugin {
     } catch (e) {
       console.error("Poet's Notebook: failed to load CMUdict", e);
       this.cmudictIndex = null;
+    }
+  }
+
+  // Not found in the vault: download it in the background (one attempt
+  // per session), then refresh the open panels.
+  async fetchCmudictIfMissing() {
+    if (this.cmudictIndex || this._cmudictDownloadFailed || this._cmudictDownloading) return;
+    this._cmudictDownloading = true;
+    new Notice("Poet's Notebook: downloading CMUdict (about 1 MB, once)…");
+    try {
+      const { index } = await downloadCmudict(this.app, this.manifest);
+      this.cmudictIndex = index;
+      this.sonorityBaseline = buildPhonemeFrequencyBaseline(index);
+      new Notice(`Poet's Notebook: CMUdict installed (${index.size} words).`);
+      this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => leaf.view && leaf.view.render && leaf.view.render());
+    } catch (e) {
+      this._cmudictDownloadFailed = true;
+      console.warn("Poet's Notebook: CMUdict download failed", e);
+      new Notice("Poet's Notebook: CMUdict could not be downloaded (offline?) — approximate syllable counts for now; next try at the next start.");
+    } finally {
+      this._cmudictDownloading = false;
     }
   }
 
