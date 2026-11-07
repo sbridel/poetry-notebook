@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS = {
   showRhymeColors: true,      // color the rhyme badges by group
   continuousRhymes: true,     // rhyme letters carry on across stanzas (off = each stanza restarts at A)
   poemForm: 'free',          // fixed form checked in the Syllables tab ('free' = none, see 16-forms.js)
+  randomExcludedTags: ['vulgar', 'sexual'], // Random: tags excluded from draws (remembered; base words carry these tags)
   onlineSources: [],          // tabs whose online source is ticked: 'rhymes' | 'inspiration' | 'synonyms'
 };
 

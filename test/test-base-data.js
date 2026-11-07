@@ -32,6 +32,18 @@ module.exports = function testsBaseData(m) {
     });
   });
 
+  group('Base data — register', () => {
+    test('slurs removed, vulgar/sexual words kept with a tag', async () => {
+      const base = await m.parseBaseData(ab);
+      const all = base.rareWords.concat(...base.themes.map((t) => t.words)).map((w) => w.word);
+      ['negro', 'coolie', 'pygmy', 'redskin'].forEach((w) => assertTrue(!all.includes(w), w));
+      const tagged = base.rareWords.filter((w) => (w.tags || []).some((t) => t === 'sexual' || t === 'vulgar'));
+      assertTrue(tagged.length > 20, String(tagged.length));
+      assertTrue(tagged.some((w) => w.word === 'concupiscence'), 'concupiscence tagged');
+      assertTrue(base.rareWords.some((w) => w.word === 'constancy' && !(w.tags || []).includes('sexual')) || !base.rareWords.some((w) => w.word === 'constancy'), 'constancy not tagged');
+    });
+  });
+
   group('Base data — merged into the tabs', () => {
     test('Inspiration: "sea" opens the Ocean theme, built-in theme still first', async () => {
       m.setBaseData(await m.parseBaseData(ab));

@@ -6,7 +6,9 @@
   renderRandomTab(panel) {
     const state = {
       includeTags: new Set(),
-      excludeTags: new Set(),
+      // Remembered between sessions; by default the base's 'vulgar' and
+      // 'sexual' words are left out of draws (one click to bring them back).
+      excludeTags: new Set(this.plugin.settings.randomExcludedTags || []),
       includeMode: 'or',
       onlyLiked: false,
       onlyExcluded: false,
@@ -109,7 +111,15 @@
       }
     };
 
+    const saveExcluded = () => {
+      const now = [...state.excludeTags];
+      const before = this.plugin.settings.randomExcludedTags || [];
+      if (now.length === before.length && now.every((t) => before.includes(t))) return;
+      this.plugin.settings.randomExcludedTags = now;
+      this.plugin.saveSettings();
+    };
     const refresh = () => {
+      saveExcluded();
       state.includeMode = andCheckbox.checked ? 'and' : 'or';
       renderQuick();
       renderStats();

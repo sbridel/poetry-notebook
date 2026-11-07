@@ -101,7 +101,7 @@ short WordNet definition (downloaded once, like CMUdict — see
 ### Random
 Draw a random rare/literary word — about 6,300 from the published base
 (rare words of Roget's Thesaurus with WordNet definitions, some tagged
-`archaic`) plus the built-in and personal ones (about half are not in CMUdict: their syllables are estimated) — with a gloss and quick links to look it up in Definitions or
+`archaic`) plus the built-in and personal ones (about half are not in CMUdict: their syllables are estimated). Words tagged `vulgar` or `sexual` are left out of draws by default — remove those tags from "Exclude tags" to bring them in; the choice is remembered — with a gloss and quick links to look it up in Definitions or
 search it in Rhymes.
 
 Every word — built-in or from your personal dictionary — can also carry your

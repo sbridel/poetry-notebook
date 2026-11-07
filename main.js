@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS = {
   showRhymeColors: true,      // color the rhyme badges by group
   continuousRhymes: true,     // rhyme letters carry on across stanzas (off = each stanza restarts at A)
   poemForm: 'free',          // fixed form checked in the Syllables tab ('free' = none, see 16-forms.js)
+  randomExcludedTags: ['vulgar', 'sexual'], // Random: tags excluded from draws (remembered; base words carry these tags)
   onlineSources: [],          // tabs whose online source is ticked: 'rhymes' | 'inspiration' | 'synonyms'
 };
 
@@ -3092,7 +3093,9 @@ class PoetsNotebookView extends ItemView {
   renderRandomTab(panel) {
     const state = {
       includeTags: new Set(),
-      excludeTags: new Set(),
+      // Remembered between sessions; by default the base's 'vulgar' and
+      // 'sexual' words are left out of draws (one click to bring them back).
+      excludeTags: new Set(this.plugin.settings.randomExcludedTags || []),
       includeMode: 'or',
       onlyLiked: false,
       onlyExcluded: false,
@@ -3195,7 +3198,15 @@ class PoetsNotebookView extends ItemView {
       }
     };
 
+    const saveExcluded = () => {
+      const now = [...state.excludeTags];
+      const before = this.plugin.settings.randomExcludedTags || [];
+      if (now.length === before.length && now.every((t) => before.includes(t))) return;
+      this.plugin.settings.randomExcludedTags = now;
+      this.plugin.saveSettings();
+    };
     const refresh = () => {
+      saveExcluded();
       state.includeMode = andCheckbox.checked ? 'and' : 'or';
       renderQuick();
       renderStats();

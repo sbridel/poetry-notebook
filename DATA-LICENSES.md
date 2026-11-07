@@ -14,9 +14,11 @@ downloads or ships come from the sources below.
 - Word frequencies from the `wordfreq` library were used only to choose
   which words to keep (common words for theme triggers, rare words for the
   Random pool); no frequency data is redistributed.
-- Offensive words were filtered out with WordNet's usage domains and the
-  "List of Dirty, Naughty, Obscene, and Otherwise Bad Words" (used as a
-  filter only, not redistributed).
+- Only slurs aimed at a group (ethnic, homophobic, ableist) are removed,
+  using a short hand-made list and WordNet's ethnic-slur senses. Vulgar and
+  sexual words are kept and tagged `vulgar` / `sexual`; the plugin's Random
+  tab leaves these tags out of draws by default (one click to change, and
+  the choice is remembered).
 
 ### WordNet licence
 
