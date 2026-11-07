@@ -290,6 +290,15 @@ in the changelog below as release notes.
 
 ## Changelog
 
+- **1.3.0** — Layout and styles aligned with the French sibling plugin, Carnet du
+  Poète, across all tabs (title, persistent tabs, framed filters, collapsible
+  per-source results, word chips with syllable counts). Syllables: Export and
+  Active note buttons, meter spelled out, per-stanza rhyme schemes with names,
+  continuous-rhymes toggle. Definitions: Free Dictionary API first, Wiktionary
+  as fallback. Inspiration: Datamuse collocations, word selection added to a
+  theme or as rare words. Synonyms: relevance threshold, "rhymes with" and
+  syllable filters. Random: quick-draw shortcuts, collapsible tag filters, tag
+  presets, manual add, statistics. Ticked online sources are remembered.
 - **1.2.0** — New **Notes** tab: personal-dictionary words without a note
   (rare words and personal theme words), each with an inline field to add one.
   Right-click a single selected word in the editor for **Rhymes** or
