@@ -8,7 +8,9 @@
          -e 's/cp-nature/pn-nature/g' carnet/src/styles.css
    then keep section 2 (English-only additions) below it, and re-apply the
    lint fixes Obsidian's review asks for: no "important" flags (higher specificity
-   instead) and no "has" pseudo-class (an is-checked class set from JS instead). */
+   instead), no "has" pseudo-class (an is-checked class set from JS instead),
+   gap shorthand instead of row-gap/column-gap, and a dotted border instead
+   of a two-value text-decoration. */
 
 .poets-notebook-view{ padding: 4px 14px 24px; font-family: var(--font-interface); }
 .poets-notebook-view h2{ font-family: var(--font-text); font-style: italic; font-weight: 500; margin-bottom: 4px; }
@@ -37,8 +39,8 @@
 .pn-analyse{ margin-top: 14px; }
 .pn-ligne{ padding: 7px 0; border-bottom: 1px dashed var(--background-modifier-border); font-family: var(--font-monospace); font-size: 0.88em; }
 .pn-ligne:last-child{ border-bottom:none; }
-.pn-ligne-top{ display:flex; flex-wrap: wrap; align-items:center; row-gap: 4px; column-gap: 10px; }
-.pn-ligne-alt{ display:flex; flex-wrap: wrap; align-items:center; row-gap: 4px; column-gap: 10px; margin-top: 4px; padding-top: 4px; border-top: 1px dotted var(--background-modifier-border); opacity: 0.85; }
+.pn-ligne-top{ display:flex; flex-wrap: wrap; align-items:center; gap: 4px 10px; }
+.pn-ligne-alt{ display:flex; flex-wrap: wrap; align-items:center; gap: 4px 10px; margin-top: 4px; padding-top: 4px; border-top: 1px dotted var(--background-modifier-border); opacity: 0.85; }
 .pn-texte{ flex: 1 1 220px; min-width: 140px; color: var(--text-normal); white-space: pre-wrap; word-break: break-word; letter-spacing: 0.2px; }
 .pn-texte-alt{ flex: 1 1 220px; min-width: 140px; color: var(--text-muted); white-space: pre-wrap; word-break: break-word; font-style: italic; }
 .pn-badges{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-left:auto; }
@@ -130,7 +132,7 @@
 .pn-bilan-ok{ color: var(--text-muted); }
 .pn-bilan-ok .pn-bilan-icone{ color: var(--color-green, var(--text-success)); }
 .pn-bilan-ko .pn-bilan-icone{ color: var(--text-error); }
-.pn-bilan-vers{ text-decoration: underline dotted; cursor:pointer; }
+.pn-bilan-vers{ text-decoration: none; border-bottom: 1px dotted currentColor; cursor:pointer; }
 .pn-bilan-conseil .pn-bilan-icone{ color: var(--text-warning, var(--color-orange)); }
 .pn-schema-ligne{ display:flex; align-items:center; gap:8px; font-family: var(--font-monospace); font-size:0.8em; color: var(--text-muted); padding:2px 0; letter-spacing:0.15em; }
 .pn-hasard-bouton-wrap{ display:flex; justify-content:center; margin-bottom:20px; }

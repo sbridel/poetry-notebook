@@ -302,6 +302,9 @@ in the changelog below as release notes.
 
 ## Changelog
 
+- **1.4.1** — CSS lint fixes from Obsidian's plugin review (gap shorthand
+  instead of row-gap/column-gap, dotted border instead of a two-value
+  text-decoration). Same look.
 - **1.4.0** — New **Form** menu in the Syllables tab: checks the poem against a
   fixed form (Shakespearean / Petrarchan / Spenserian sonnet, villanelle,
   limerick, haiku, heroic couplets, blank verse, terza rima, ballad stanza)
