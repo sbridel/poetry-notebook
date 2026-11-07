@@ -11,6 +11,7 @@ const DEFAULT_SETTINGS = {
   personalDictPathOverride: '', // optional explicit vault-relative path for the personal dictionary
   showRhymeColors: true,      // color the rhyme badges by group
   continuousRhymes: true,     // rhyme letters carry on across stanzas (off = each stanza restarts at A)
+  poemForm: 'free',          // fixed form checked in the Syllables tab ('free' = none, see 16-forms.js)
   onlineSources: [],          // tabs whose online source is ticked: 'rhymes' | 'inspiration' | 'synonyms'
 };
 

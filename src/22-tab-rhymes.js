@@ -19,6 +19,27 @@
     const perfectToggle = makeTogglePill(typeDiv, 'Perfect', true, 'Stressed vowel and everything after it match exactly (light / flight).');
     const nearToggle = makeTogglePill(typeDiv, 'Near / slant', !this.plugin.settings.strictRhymeMode, 'Close but not identical sounds: consonance or assonance (shape / keep).');
 
+    filtersBox.createDiv({ cls: 'pn-filtres-separateur' });
+    // Part of speech: CMUdict has none, so this filter relies on Datamuse
+    // (it also tags the CMUdict words it knows). A word whose part of speech
+    // is unknown is never hidden — the filter only acts on what is known,
+    // as in the French plugin.
+    const lineNature = filtersBox.createDiv({ cls: 'pn-filtres-ligne' });
+    lineNature.createSpan({ cls: 'pn-filtres-ligne-label', text: 'Part of speech: ' });
+    const natureDiv = lineNature.createDiv({ cls: 'pn-cgram-filtres' });
+    const NATURES = [['n', 'Noun', '#2980b9'], ['v', 'Verb', '#c0392b'], ['adj', 'Adjective', '#27ae60'], ['adv', 'Adverb', '#8e44ad']];
+    const natureToggles = {};
+    NATURES.forEach(([id, label, color]) => {
+      const input = makeTogglePill(natureDiv, label, true, null, 'pn-cgram-pill');
+      input.parentElement.style.setProperty('--ccolor', color);
+      natureToggles[id] = input;
+    });
+    const syncNatureHint = (online) => {
+      lineNature.style.opacity = online ? '1' : '0.5';
+      lineNature.setAttr('title', online ? 'Words whose part of speech is unknown are always kept.'
+        : 'Needs Datamuse (tick it below): CMUdict has no part of speech.');
+    };
+
     const sourcesBox = panel.createDiv({ cls: 'pn-boite pn-sources' });
     sourcesBox.createSpan({ cls: 'pn-sources-label', text: 'Complete online: ' });
     const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse', (this.plugin.settings.onlineSources || []).includes('rhymes'),
@@ -39,6 +60,7 @@
       perfect: perfectToggle.checked,
       near: nearToggle.checked,
       online: datamuseToggle.checked,
+      pos: new Set(Object.keys(natureToggles).filter((id) => natureToggles[id].checked)),
     });
 
     searchBtn.addEventListener('click', doSearch);
@@ -46,9 +68,12 @@
     letterInput.addEventListener('input', doSearch);
     syllSelect.addEventListener('change', doSearch);
     perfectToggle.addEventListener('change', doSearch);
+    Object.values(natureToggles).forEach((t) => t.addEventListener('change', doSearch));
+    syncNatureHint(datamuseToggle.checked);
     nearToggle.addEventListener('change', doSearch);
     datamuseToggle.addEventListener('change', async () => {
       await this.plugin.setOnlineSource('rhymes', datamuseToggle.checked);
+      syncNatureHint(datamuseToggle.checked);
       doSearch();
     });
 
@@ -72,6 +97,29 @@
     };
     const letterMatch = (w) => !f.letter || w.toLowerCase().startsWith(f.letter.toLowerCase());
 
+    // Online first when ticked: besides its own matches, Datamuse gives the
+    // part of speech of the CMUdict words it knows, used by the filter.
+    let online = null, onlineError = false;
+    if (f.online) {
+      container.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
+      try {
+        const [perfect, near] = await Promise.all([
+          f.perfect ? fetchDatamuseRhymes(word, false, 1000) : Promise.resolve([]),
+          showNear ? fetchDatamuseRhymes(word, true, 1000) : Promise.resolve([]),
+        ]);
+        online = { perfect, near };
+      } catch (e) { onlineError = true; }
+      container.empty();
+    }
+    const posOf = new Map();
+    if (online) [...online.perfect, ...online.near].forEach((d) => { if (d.pos.length) posOf.set(d.word.toLowerCase(), d.pos); });
+    const allPos = !f.pos || f.pos.size === 4;
+    const posMatch = (w) => {
+      if (allPos || !f.online) return true;
+      const tags = posOf.get(w.toLowerCase());
+      return !tags || tags.some((t) => f.pos.has(t));
+    };
+
     const localBody = makeSourceBlock(container, `${word} — CMUdict`, true, true);
     const local = idx ? searchLocalRhymes(word, idx, { letter: f.letter, syllables: null }) : null;
     if (!idx) {
@@ -79,8 +127,9 @@
     } else if (!local) {
       localBody.createEl('p', { cls: 'pn-vide', text: `"${word}" wasn't found in CMUdict, so its rhyme sound is unknown. Try another spelling.` });
     } else {
-      const perfect = f.perfect ? local.perfect.filter((r) => sylMatch(r.syllableCount)).map((r) => r.word) : [];
-      const near = showNear ? local.near.filter((r) => sylMatch(r.syllableCount)).map((r) => r.word) : [];
+      const keep = (list) => list.filter((r) => sylMatch(r.syllableCount) && posMatch(r.word)).map((r) => r.word);
+      const perfect = f.perfect ? keep(local.perfect) : [];
+      const near = showNear ? keep(local.near) : [];
       if (perfect.length === 0 && near.length === 0) {
         localBody.createEl('p', { cls: 'pn-vide', text: 'No word matches these filters.' });
       }
@@ -95,30 +144,24 @@
 
     if (!f.online) return;
     const onlineBody = makeSourceBlock(container, `${word} — Datamuse`, true, false);
-    const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
-    try {
-      const [perfect, near] = await Promise.all([
-        f.perfect ? fetchDatamuseRhymes(word, false) : Promise.resolve([]),
-        showNear ? fetchDatamuseRhymes(word, true) : Promise.resolve([]),
-      ]);
-      status.remove();
-      const known = new Set(local ? [...local.perfect, ...local.near].map((r) => r.word) : []);
-      const keep = (list) => list
-        .filter((d) => !known.has(d.word.toLowerCase()) && letterMatch(d.word) && sylMatch(d.numSyllables || 0))
-        .map((d) => d.word);
-      const extraPerfect = keep(perfect);
-      const extraNear = keep(near);
-      if (extraPerfect.length === 0 && extraNear.length === 0) {
-        onlineBody.createEl('p', { cls: 'pn-vide', text: 'Nothing more than CMUdict for these filters.' });
-        return;
-      }
-      makeWordGroup(onlineBody, 'Perfect (not already listed)', extraPerfect, 'pn-mot', idx);
-      if (extraNear.length) {
-        onlineBody.createDiv({ cls: 'pn-titre pn-label-assonance', text: `Near / slant (${extraNear.length})` });
-        const words = onlineBody.createDiv({ cls: 'pn-mots' });
-        showWithLimit(words, extraNear, (w) => makeWordChip(words, w, 'pn-mot pn-mot-assonance', idx));
-      }
-    } catch (e) {
-      status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
+    if (onlineError) {
+      onlineBody.createEl('p', { cls: 'pn-vide', text: 'Datamuse: search impossible (no connection, site unreachable, or timeout).' });
+      return;
+    }
+    const known = new Set(local ? [...local.perfect, ...local.near].map((r) => r.word) : []);
+    const keepOnline = (list) => list
+      .filter((d) => !known.has(d.word.toLowerCase()) && letterMatch(d.word) && sylMatch(d.numSyllables || 0) && posMatch(d.word))
+      .map((d) => d.word);
+    const extraPerfect = keepOnline(online.perfect);
+    const extraNear = keepOnline(online.near);
+    if (extraPerfect.length === 0 && extraNear.length === 0) {
+      onlineBody.createEl('p', { cls: 'pn-vide', text: 'Nothing more than CMUdict for these filters.' });
+      return;
+    }
+    makeWordGroup(onlineBody, 'Perfect (not already listed)', extraPerfect, 'pn-mot', idx);
+    if (extraNear.length) {
+      onlineBody.createDiv({ cls: 'pn-titre pn-label-assonance', text: `Near / slant (${extraNear.length})` });
+      const words = onlineBody.createDiv({ cls: 'pn-mots' });
+      showWithLimit(words, extraNear, (w) => makeWordChip(words, w, 'pn-mot pn-mot-assonance', idx));
     }
   }

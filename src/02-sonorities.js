@@ -326,9 +326,12 @@ const THEME_VOWEL = {
 
 // Datamuse online rhymes, only ever called on explicit user action (a
 // checkbox the person ticks before searching), never automatically.
-async function fetchDatamuseRhymes(word, near) {
+// Datamuse rhymes, with each word's parts of speech (md=p) so the Rhymes
+// tab can filter by "Nature" like the French plugin. pos: subset of
+// ['n','v','adj','adv'] ([] when Datamuse gives none).
+async function fetchDatamuseRhymes(word, near, max) {
   const rel = near ? 'rel_nry' : 'rel_rhy';
-  const url = `https://api.datamuse.com/words?${rel}=${encodeURIComponent(word.toLowerCase())}&max=100`;
+  const url = `https://api.datamuse.com/words?${rel}=${encodeURIComponent(word.toLowerCase())}&md=p&max=${max || 100}`;
   const res = await requestUrl({
     url,
     headers: {
@@ -336,7 +339,12 @@ async function fetchDatamuseRhymes(word, near) {
     },
   });
   const data = res.json;
-  return Array.isArray(data) ? data.map((d) => ({ word: d.word, numSyllables: d.numSyllables })) : [];
+  const POS = new Set(['n', 'v', 'adj', 'adv']);
+  return Array.isArray(data) ? data.map((d) => ({
+    word: d.word,
+    numSyllables: d.numSyllables,
+    pos: (d.tags || []).filter((t) => POS.has(t)),
+  })) : [];
 }
 
 // Datamuse fallback: only syllable count is reliable enough to use.

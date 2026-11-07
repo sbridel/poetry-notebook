@@ -36,11 +36,24 @@
     const flipBack = flipCard.createDiv({ cls: 'pn-flip-face pn-flip-back' });
 
     const toolbar = flipFront.createDiv({ cls: 'pn-toolbar' });
+    // Target fixed form: "free" = usual behaviour; otherwise a checklist
+    // of the form's rules appears above the analysis (see 16-forms.js).
+    const formWrap = toolbar.createDiv({ cls: 'pn-select-wrap' });
+    const formSelect = formWrap.createEl('select', { cls: 'pn-forme-select' });
+    formWrap.createSpan({ cls: 'pn-select-arrow', text: '▾' });
+    formSelect.createEl('option', { attr: { value: 'free' }, text: 'Form: free' });
+    FORM_GROUPS.forEach((g) => {
+      const og = formSelect.createEl('optgroup', { attr: { label: g.name } });
+      g.ids.forEach((id) => og.createEl('option', { attr: { value: id }, text: FORMS[id].name }));
+    });
+    formSelect.value = FORMS[this.plugin.settings.poemForm] ? this.plugin.settings.poemForm : 'free';
+    formSelect.setAttr('title', 'Choose a fixed form to check the poem against its rules (lines, stanzas, rhyme scheme, syllables, meter, refrains).');
     const mkToggle = (parent, label, checked, title) => makeTogglePill(parent, label, checked, title);
     const colorsToggle = mkToggle(toolbar, 'Rhyme colors', this.plugin.settings.showRhymeColors !== false);
     const continuousToggle = mkToggle(toolbar, 'Continuous rhymes across stanzas', this.plugin.settings.continuousRhymes !== false,
       'By default each stanza starts again at A. Check to carry the letters on from one stanza to the next (useful for sonnets: ABAB CDCD EFEF GG rather than ABAB ABAB…).');
 
+    const checklistDiv = flipFront.createDiv({ cls: 'pn-bilan-forme' });
     const analysisDiv = flipFront.createDiv({ cls: 'pn-analyse' });
     const schemaDiv = flipFront.createDiv({ cls: 'pn-schema-rimes' });
     const totalBar = flipFront.createDiv({ cls: 'pn-total-bar' });
@@ -58,6 +71,7 @@
       debounceTimer = setTimeout(async () => {
         await this.runAnalysis(textarea.value, analysisDiv, schemaDiv, totalBar,
           colorsToggle.checked, continuousToggle.checked);
+        this.renderFormChecklist(checklistDiv, textarea.value, formSelect.value);
         syncFlipHeight();
         if (flipZone.hasClass('flipped')) renderSonoritiesBack();
       }, 250);
@@ -79,6 +93,11 @@
 
     colorsToggle.addEventListener('change', async () => {
       this.plugin.settings.showRhymeColors = colorsToggle.checked;
+      await this.plugin.saveSettings();
+      scheduleAnalysis();
+    });
+    formSelect.addEventListener('change', async () => {
+      this.plugin.settings.poemForm = formSelect.value;
       await this.plugin.saveSettings();
       scheduleAnalysis();
     });
@@ -141,6 +160,20 @@
         }
       });
       const extract = extractPoemFromNote(content, selection);
+      // A "form:" property (id or name, e.g. "form: villanelle") sets the Form menu.
+      const cache = this.app.metadataCache && this.app.metadataCache.getFileCache(file);
+      const fm = cache && cache.frontmatter;
+      const wanted = fm && fm.form != null ? String(fm.form) : null;
+      if (wanted) {
+        const id = formIdFromName(wanted);
+        if (id) {
+          formSelect.value = id;
+          this.plugin.settings.poemForm = id;
+          await this.plugin.saveSettings();
+        } else {
+          new Notice(`Poet's Notebook: unknown form "${wanted}" (see the Form menu).`);
+        }
+      }
       if (!extract.text) { new Notice("Poet's Notebook: nothing to load (note empty after cleanup)."); return; }
       textarea.value = extract.text;
       saveDraft();
@@ -154,6 +187,7 @@
       await this.plugin.saveSettings();
       analysisDiv.empty();
       schemaDiv.empty();
+      checklistDiv.empty();
       totalBar.style.display = 'none';
       if (flipZone.hasClass('flipped')) renderSonoritiesBack();
       syncFlipHeight();
@@ -353,6 +387,45 @@
     listDetails.addEventListener('toggle', syncFlipHeight);
 
     return render;
+  }
+
+  // Checklist of the chosen fixed form's rules. Failing line numbers are
+  // links: they open the Rhymes tab on that line's last word.
+  renderFormChecklist(div, text, formId) {
+    div.empty();
+    if (!text.trim()) return;
+    const result = checkForm(text, formId, this.plugin.cmudictIndex);
+    if (!result) return;
+    const strict = result.rules.filter((r) => !r.advice);
+    const toCheck = result.rules.filter((r) => r.advice && !r.ok).length;
+    div.createDiv({
+      cls: 'pn-bilan-titre',
+      text: `${result.name}: ${strict.filter((r) => r.ok).length}/${strict.length} rules met` + (toCheck ? `, ${toCheck} point(s) to check` : ''),
+    });
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    result.rules.forEach((r) => {
+      const state = r.ok ? 'ok' : (r.advice ? 'conseil' : 'ko');
+      const row = div.createDiv({ cls: 'pn-bilan-regle pn-bilan-' + state });
+      row.createSpan({ cls: 'pn-bilan-icone', text: { ok: '✓', conseil: '⚠', ko: '✗' }[state] });
+      const body = row.createSpan();
+      body.appendText(r.label);
+      if (!r.ok && r.lines.length) {
+        body.appendText(' — line' + (r.lines.length > 1 ? 's ' : ' '));
+        r.lines.forEach((num, i) => {
+          if (i > 0) body.appendText(', ');
+          const word = lastWordOfLine(lines[num - 1] || '') || '';
+          const link = body.createEl('a', { cls: 'pn-bilan-vers', text: String(num), attr: { href: '#' } });
+          link.setAttr('title', word ? `Find rhymes for "${word}" (Rhymes tab)` : 'Line ' + num);
+          link.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (!word) return;
+            this.switchTab('rhymes');
+            if (this._prefillRhymes) this._prefillRhymes(word);
+          });
+        });
+      }
+      if (!r.ok && r.detail) body.appendText(` (${r.detail})`);
+    });
   }
 
   async runAnalysis(text, analysisDiv, schemaDiv, totalBar, showColors, continuous) {

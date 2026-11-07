@@ -53,12 +53,24 @@ rhyme ABAB, enclosed rhyme ABBA). **Continuous rhymes across stanzas** (on by
 default) carries the letters on from one stanza to the next; off, each stanza
 restarts at A.
 
+The **Form** menu (Syllables tab) checks the poem against a fixed form —
+Shakespearean, Petrarchan or Spenserian sonnet, villanelle, limerick, haiku,
+heroic couplets, blank verse, terza rima, ballad stanza — with a checklist
+above the analysis: ✓ rule met, ✗ rule broken, ⚠ point to check (things the
+engine can only estimate: stress-based meter, a syllable count one off, a
+rhyme only on the last unstressed syllable, refrains with changed wording).
+Line numbers in the checklist open the Rhymes tab on that line's last word.
+A `form:` property in a note (e.g. `form: villanelle`) sets the menu when the
+note is loaded with **Active note**.
+
 ### Rhymes
 Search CMUdict for perfect rhymes (matching stressed vowel and everything
 after it) and near/slant rhymes (consonance or assonance), grouped by
 syllable count. Near rhymes are always shown in a separate section unless
-"Strict rhyme mode" is on in Settings. Filter by starting letter or syllable
-count. An optional Datamuse online lookup (off by default) adds any extra
+"Strict rhyme mode" is on in Settings. Filter by starting letter, syllable
+count or part of speech (noun, verb, adjective, adverb — needs Datamuse,
+since CMUdict has no part of speech; words whose part of speech is unknown
+are always kept). An optional Datamuse online lookup (off by default) adds any extra
 matches; a link opens the word's RhymeZone page in your browser for
 RhymeZone's own advanced filters.
 

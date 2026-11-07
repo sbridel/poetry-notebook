@@ -11,6 +11,7 @@ const DEFAULT_SETTINGS = {
   personalDictPathOverride: '', // optional explicit vault-relative path for the personal dictionary
   showRhymeColors: true,      // color the rhyme badges by group
   continuousRhymes: true,     // rhyme letters carry on across stanzas (off = each stanza restarts at A)
+  poemForm: 'free',          // fixed form checked in the Syllables tab ('free' = none, see 16-forms.js)
   onlineSources: [],          // tabs whose online source is ticked: 'rhymes' | 'inspiration' | 'synonyms'
 };
 
@@ -759,9 +760,12 @@ const THEME_VOWEL = {
 
 // Datamuse online rhymes, only ever called on explicit user action (a
 // checkbox the person ticks before searching), never automatically.
-async function fetchDatamuseRhymes(word, near) {
+// Datamuse rhymes, with each word's parts of speech (md=p) so the Rhymes
+// tab can filter by "Nature" like the French plugin. pos: subset of
+// ['n','v','adj','adv'] ([] when Datamuse gives none).
+async function fetchDatamuseRhymes(word, near, max) {
   const rel = near ? 'rel_nry' : 'rel_rhy';
-  const url = `https://api.datamuse.com/words?${rel}=${encodeURIComponent(word.toLowerCase())}&max=100`;
+  const url = `https://api.datamuse.com/words?${rel}=${encodeURIComponent(word.toLowerCase())}&md=p&max=${max || 100}`;
   const res = await requestUrl({
     url,
     headers: {
@@ -769,7 +773,12 @@ async function fetchDatamuseRhymes(word, near) {
     },
   });
   const data = res.json;
-  return Array.isArray(data) ? data.map((d) => ({ word: d.word, numSyllables: d.numSyllables })) : [];
+  const POS = new Set(['n', 'v', 'adj', 'adv']);
+  return Array.isArray(data) ? data.map((d) => ({
+    word: d.word,
+    numSyllables: d.numSyllables,
+    pos: (d.tags || []).filter((t) => POS.has(t)),
+  })) : [];
 }
 
 // Datamuse fallback: only syllable count is reliable enough to use.
@@ -1348,8 +1357,8 @@ function makeSyllableSelect(parent) {
 // A toggle pill (checkbox hidden, filled when checked). The filled state
 // comes from an is-checked class kept in sync here rather than a CSS
 // :has(input:checked) selector, which Obsidian's review flags as costly.
-function makeTogglePill(parent, label, checked, title) {
-  const lbl = parent.createEl('label', { cls: 'pn-hasard-toggle-pool' });
+function makeTogglePill(parent, label, checked, title, cls) {
+  const lbl = parent.createEl('label', { cls: cls || 'pn-hasard-toggle-pool' });
   const input = lbl.createEl('input', { attr: { type: 'checkbox' } });
   input.checked = !!checked;
   lbl.createSpan({ text: ' ' + label });
@@ -1493,6 +1502,190 @@ function makeAllTagsPanel(container, toggleBtn, getTags, onPick, label) {
 }
 
 // ============================================================
+// FIXED FORMS — English counterpart of the French plugin's "Forme" menu.
+// checkForm(text, formId, cmudictIndex) returns null for "free", else
+// { name, rules: [{ label, ok, lines: [n…], detail, advice }] } where
+// `advice` rules are shown with ⚠ and never count as failures (used for
+// what the engine can only estimate: stress-based meter, refrains with
+// small wording changes). Line numbers count non-empty lines from 1.
+// ============================================================
+const FORMS = {
+  shakespearean: { name: 'Shakespearean sonnet', lines: 14, scheme: ['ABABCDCDEFEFGG'], schemeLabel: 'ABAB CDCD EFEF GG', syllables: [10, 11], meter: 'iambic' },
+  petrarchan: { name: 'Petrarchan sonnet', lines: 14, scheme: ['ABBAABBACDECDE', 'ABBAABBACDCDCD', 'ABBAABBACDEDCE'], schemeLabel: 'ABBA ABBA + CDE CDE / CDC DCD / CDE DCE', syllables: [10, 11], meter: 'iambic' },
+  spenserian: { name: 'Spenserian sonnet', lines: 14, scheme: ['ABABBCBCCDCDEE'], schemeLabel: 'ABAB BCBC CDCD EE', syllables: [10, 11], meter: 'iambic' },
+  villanelle: { name: 'Villanelle', lines: 19, stanzas: [3, 3, 3, 3, 3, 4], scheme: ['ABAABAABAABAABAABAA'], schemeLabel: 'ABA ABA ABA ABA ABA ABAA', syllables: null,
+    refrains: [[1, 6, 12, 18], [3, 9, 15, 19]] },
+  terzaRima: { name: 'Terza rima', terza: true, syllables: [10, 11], meter: 'iambic' },
+  heroic: { name: 'Heroic couplets', couplets: true, syllables: [10, 11], meter: 'iambic' },
+  blank: { name: 'Blank verse', syllables: [10, 11], meter: 'iambic', unrhymed: true },
+  ballad: { name: 'Ballad stanza', ballad: true },
+  limerick: { name: 'Limerick', lines: 5, scheme: ['AABBA'], schemeLabel: 'AABBA', perLine: [[7, 10], [7, 10], [4, 7], [4, 7], [7, 10]] },
+  haiku: { name: 'Haiku', lines: 3, perLine: [[5, 5], [7, 7], [5, 5]], noRhyme: true },
+};
+const FORM_GROUPS = [
+  { name: 'Sonnets', ids: ['shakespearean', 'petrarchan', 'spenserian'] },
+  { name: 'Fixed forms', ids: ['villanelle', 'limerick', 'haiku'] },
+  { name: 'Verse patterns', ids: ['heroic', 'blank', 'terzaRima', 'ballad'] },
+];
+
+function normalizeRefrain(line) {
+  return (line || '').toLowerCase().replace(/[^a-z' ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// Lines that should rhyme (same symbol in `pattern`, a string or array) but don't. Returns
+// { bad: [n…], unknown: [n…] } (1-based); unknown = word not in CMUdict.
+function checkRhymePattern(keys, pattern, tails) {
+  const firstOf = new Map();
+  const bad = new Set();
+  const weak = new Set();
+  const unknown = new Set();
+  for (let i = 0; i < pattern.length && i < keys.length; i++) {
+    const letter = pattern[i];
+    if (letter === 'x') continue;
+    if (keys[i] === null) { unknown.add(i + 1); continue; }
+    if (!firstOf.has(letter)) { firstOf.set(letter, i); continue; }
+    const j = firstOf.get(letter);
+    if (keys[j] === keys[i]) continue;
+    if (tails && tails[i] && tails[i] === tails[j]) weak.add(i + 1);
+    else bad.add(i + 1);
+  }
+  return { bad: [...bad], weak: [...weak], unknown: [...unknown] };
+}
+
+// Last-syllable rhyme, ignoring stress ("temperate" / "date"): what
+// Shakespeare and others often rhyme on. Counts as a weak rhyme (⚠).
+function lastSyllableKey(word, cmudictIndex) {
+  const entry = resolveCmudictEntry(word, cmudictIndex);
+  if (!entry) return null;
+  const ph = entry.phonemes;
+  let i = ph.length - 1;
+  while (i >= 0 && !/\d$/.test(ph[i])) i--;
+  return i < 0 ? null : ph.slice(i).map((p) => p.replace(/\d$/, '')).join(' ');
+}
+
+function checkForm(text, formId, cmudictIndex) {
+  const form = FORMS[formId];
+  if (!form) return null;
+  const raw = text.split(/\r?\n/);
+  const lines = raw.filter((l) => l.trim());
+  const stanzaSizes = [];
+  let run = 0;
+  raw.forEach((l) => { if (l.trim()) run++; else if (run) { stanzaSizes.push(run); run = 0; } });
+  if (run) stanzaSizes.push(run);
+  const analyses = lines.map((l) => {
+    const a = analyzeLine(l, cmudictIndex, null);
+    return { ...a, meter: detectMeter(a.stressSeq, a.rigidSeq) };
+  });
+  const lastWords = lines.map((l) => lastWordOfLine(l));
+  const keys = lastWords.map((w) => (w ? rhymeKeyForWord(w, cmudictIndex) : null));
+  const tails = lastWords.map((w) => (w ? lastSyllableKey(w, cmudictIndex) : null));
+  const rules = [];
+  const n = lines.length;
+  const add = (label, ok, badLines, detail, advice) => rules.push({ label, ok, lines: badLines || [], detail: detail || '', advice: !!advice });
+
+  if (form.lines) add(`${form.lines} lines`, n === form.lines, [], n === form.lines ? '' : `${n} line${n > 1 ? 's' : ''}`);
+  if (form.stanzas) {
+    const ok = stanzaSizes.join(',') === form.stanzas.join(',');
+    add(`Stanzas of ${form.stanzas.join(' + ')} lines`, ok, [], ok ? '' : `found ${stanzaSizes.join(' + ') || 'none'}`);
+  }
+  if (form.couplets) add('An even number of lines (couplets)', n % 2 === 0, [], n % 2 ? `${n} lines` : '');
+  if (form.terza) {
+    const ok = stanzaSizes.length > 0 && stanzaSizes.slice(0, -1).every((s) => s === 3) && [1, 2, 3].includes(stanzaSizes[stanzaSizes.length - 1]);
+    add('Tercets (a closing line or couplet allowed)', ok, [], ok ? '' : `found ${stanzaSizes.join(' + ')}`);
+  }
+  if (form.ballad) {
+    const ok = stanzaSizes.length > 0 && stanzaSizes.every((s) => s === 4);
+    add('Quatrains', ok, [], ok ? '' : `found ${stanzaSizes.join(' + ')}`);
+  }
+
+  // ---- rhyme ----
+  if (form.scheme) {
+    const tries = form.scheme.map((p) => ({ p, r: checkRhymePattern(keys, p, tails) }));
+    const best = tries.reduce((a, b) => (b.r.bad.length < a.r.bad.length ? b : a));
+    add(`Rhyme scheme ${form.schemeLabel}`, best.r.bad.length === 0, best.r.bad, best.r.bad.length ? 'no rhyme where the form expects one' : '');
+    if (best.r.weak.length) add('Full rhymes (stressed vowel and what follows)', false, best.r.weak, 'only the last, unstressed syllable rhymes', true);
+    if (best.r.unknown.length) add('Every rhyme word known to CMUdict', false, best.r.unknown, 'cannot check these line endings', true);
+  } else if (form.couplets) {
+    const r = checkRhymePattern(keys, keys.map((_, i) => 'c' + Math.floor(i / 2)), tails);
+    add('Rhymed couplets (AA BB CC…)', r.bad.length === 0, r.bad);
+  } else if (form.terza) {
+    // ABA BCB CDC…: line 3k+1 & 3k+3 rhyme; 3k+2 rhymes with 3(k+1)+1.
+    const bad = new Set();
+    for (let k = 0; 3 * k + 2 < n; k++) {
+      const a = 3 * k, b = 3 * k + 1, c = 3 * k + 2;
+      if (keys[a] && keys[c] && keys[a] !== keys[c]) bad.add(c + 1);
+      if (c + 1 < n && keys[b] && keys[c + 1] && keys[b] !== keys[c + 1]) bad.add(c + 2);
+    }
+    add('Interlocking rhyme (ABA BCB CDC…)', bad.size === 0, [...bad]);
+  } else if (form.ballad) {
+    const bad = [];
+    for (let k = 0; 4 * k + 3 < n; k++) if (keys[4 * k + 1] && keys[4 * k + 3] && keys[4 * k + 1] !== keys[4 * k + 3]) bad.push(4 * k + 4);
+    add('Lines 2 and 4 of each quatrain rhyme (ABCB)', bad.length === 0, bad);
+  }
+  if (form.unrhymed) {
+    const rhymed = [];
+    for (let i = 1; i < n; i++) if (keys[i] && keys[i] === keys[i - 1]) rhymed.push(i + 1);
+    add('Unrhymed (no consecutive end rhymes)', rhymed.length === 0, rhymed, '', true);
+  }
+  if (form.noRhyme) {
+    // Traditional English haiku don't rhyme; only a hint.
+    const r = keys.filter(Boolean);
+    add('No end rhyme (traditional)', new Set(r).size === r.length, [], '', true);
+  }
+
+  // ---- refrains ----
+  if (form.refrains) {
+    form.refrains.forEach((group, gi) => {
+      const ref = normalizeRefrain(lines[group[0] - 1]);
+      const bad = group.slice(1).filter((ln) => ln <= n && normalizeRefrain(lines[ln - 1]) !== ref);
+      add(`Refrain A${gi + 1} (line ${group[0]}) repeated at lines ${group.slice(1).join(', ')}`, bad.length === 0, bad,
+        bad.length ? 'wording differs (small variations are traditional)' : '', true);
+    });
+  }
+
+  // ---- syllables / meter ----
+  if (form.syllables) {
+    // English counts are fuzzy (elision: "temp'rate", "heav'n"): one syllable
+    // off is only flagged as a point to check, more than that fails.
+    const [lo, hi] = form.syllables;
+    const off = (sy) => (sy < lo ? lo - sy : sy > hi ? sy - hi : 0);
+    const bad = analyses.map((a, i) => (off(a.totalSyllables) > 1 ? i + 1 : 0)).filter(Boolean);
+    const near = analyses.map((a, i) => (off(a.totalSyllables) === 1 ? i + 1 : 0)).filter(Boolean);
+    add(`${lo} syllables per line (${hi} with a feminine ending)`, bad.length === 0, bad);
+    if (near.length) add('Syllable count within one (elision?)', false, near, 'check for an elided or slurred syllable', true);
+  }
+  if (form.perLine) {
+    const bad = [];
+    form.perLine.forEach(([lo, hi], i) => {
+      if (i >= n) return;
+      const s = analyses[i].totalSyllables;
+      if (s < lo || s > hi) bad.push(i + 1);
+    });
+    const desc = form.perLine.map(([lo, hi]) => (lo === hi ? String(lo) : `${lo}-${hi}`)).join(' / ');
+    add(`Syllables per line: ${desc}`, bad.length === 0, bad);
+  }
+  if (form.ballad) {
+    const bad = analyses.map((a, i) => {
+      const odd = i % 2 === 0;
+      const s = a.totalSyllables;
+      return (odd ? (s < 7 || s > 9) : (s < 5 || s > 7)) ? i + 1 : 0;
+    }).filter(Boolean);
+    add('Alternating ~8 / ~6 syllables (4 and 3 stresses)', bad.length === 0, bad, '', true);
+  }
+  if (form.meter) {
+    const bad = analyses.map((a, i) => (a.meter.footType === form.meter ? 0 : i + 1)).filter(Boolean);
+    add(`${form.meter.charAt(0).toUpperCase() + form.meter.slice(1)} meter`, bad.length === 0, bad,
+      bad.length ? 'stress detection is approximate — check by ear' : '', true);
+  }
+  return { name: form.name, rules };
+}
+
+// Reads a "form:" frontmatter value (id or name, any case/spacing).
+function formIdFromName(value) {
+  const k = String(value || '').toLowerCase().replace(/[^a-z]/g, '');
+  return Object.keys(FORMS).find((id) => id.toLowerCase() === k || FORMS[id].name.toLowerCase().replace(/[^a-z]/g, '') === k) || null;
+}
+// ============================================================
 // VIEW
 // Same layout as the French sibling plugin (Carnet du Poète): a title,
 // a tab bar, then one panel per tab, all built once and shown/hidden on
@@ -1612,11 +1805,24 @@ class PoetsNotebookView extends ItemView {
     const flipBack = flipCard.createDiv({ cls: 'pn-flip-face pn-flip-back' });
 
     const toolbar = flipFront.createDiv({ cls: 'pn-toolbar' });
+    // Target fixed form: "free" = usual behaviour; otherwise a checklist
+    // of the form's rules appears above the analysis (see 16-forms.js).
+    const formWrap = toolbar.createDiv({ cls: 'pn-select-wrap' });
+    const formSelect = formWrap.createEl('select', { cls: 'pn-forme-select' });
+    formWrap.createSpan({ cls: 'pn-select-arrow', text: '▾' });
+    formSelect.createEl('option', { attr: { value: 'free' }, text: 'Form: free' });
+    FORM_GROUPS.forEach((g) => {
+      const og = formSelect.createEl('optgroup', { attr: { label: g.name } });
+      g.ids.forEach((id) => og.createEl('option', { attr: { value: id }, text: FORMS[id].name }));
+    });
+    formSelect.value = FORMS[this.plugin.settings.poemForm] ? this.plugin.settings.poemForm : 'free';
+    formSelect.setAttr('title', 'Choose a fixed form to check the poem against its rules (lines, stanzas, rhyme scheme, syllables, meter, refrains).');
     const mkToggle = (parent, label, checked, title) => makeTogglePill(parent, label, checked, title);
     const colorsToggle = mkToggle(toolbar, 'Rhyme colors', this.plugin.settings.showRhymeColors !== false);
     const continuousToggle = mkToggle(toolbar, 'Continuous rhymes across stanzas', this.plugin.settings.continuousRhymes !== false,
       'By default each stanza starts again at A. Check to carry the letters on from one stanza to the next (useful for sonnets: ABAB CDCD EFEF GG rather than ABAB ABAB…).');
 
+    const checklistDiv = flipFront.createDiv({ cls: 'pn-bilan-forme' });
     const analysisDiv = flipFront.createDiv({ cls: 'pn-analyse' });
     const schemaDiv = flipFront.createDiv({ cls: 'pn-schema-rimes' });
     const totalBar = flipFront.createDiv({ cls: 'pn-total-bar' });
@@ -1634,6 +1840,7 @@ class PoetsNotebookView extends ItemView {
       debounceTimer = setTimeout(async () => {
         await this.runAnalysis(textarea.value, analysisDiv, schemaDiv, totalBar,
           colorsToggle.checked, continuousToggle.checked);
+        this.renderFormChecklist(checklistDiv, textarea.value, formSelect.value);
         syncFlipHeight();
         if (flipZone.hasClass('flipped')) renderSonoritiesBack();
       }, 250);
@@ -1655,6 +1862,11 @@ class PoetsNotebookView extends ItemView {
 
     colorsToggle.addEventListener('change', async () => {
       this.plugin.settings.showRhymeColors = colorsToggle.checked;
+      await this.plugin.saveSettings();
+      scheduleAnalysis();
+    });
+    formSelect.addEventListener('change', async () => {
+      this.plugin.settings.poemForm = formSelect.value;
       await this.plugin.saveSettings();
       scheduleAnalysis();
     });
@@ -1717,6 +1929,20 @@ class PoetsNotebookView extends ItemView {
         }
       });
       const extract = extractPoemFromNote(content, selection);
+      // A "form:" property (id or name, e.g. "form: villanelle") sets the Form menu.
+      const cache = this.app.metadataCache && this.app.metadataCache.getFileCache(file);
+      const fm = cache && cache.frontmatter;
+      const wanted = fm && fm.form != null ? String(fm.form) : null;
+      if (wanted) {
+        const id = formIdFromName(wanted);
+        if (id) {
+          formSelect.value = id;
+          this.plugin.settings.poemForm = id;
+          await this.plugin.saveSettings();
+        } else {
+          new Notice(`Poet's Notebook: unknown form "${wanted}" (see the Form menu).`);
+        }
+      }
       if (!extract.text) { new Notice("Poet's Notebook: nothing to load (note empty after cleanup)."); return; }
       textarea.value = extract.text;
       saveDraft();
@@ -1730,6 +1956,7 @@ class PoetsNotebookView extends ItemView {
       await this.plugin.saveSettings();
       analysisDiv.empty();
       schemaDiv.empty();
+      checklistDiv.empty();
       totalBar.style.display = 'none';
       if (flipZone.hasClass('flipped')) renderSonoritiesBack();
       syncFlipHeight();
@@ -1931,6 +2158,45 @@ class PoetsNotebookView extends ItemView {
     return render;
   }
 
+  // Checklist of the chosen fixed form's rules. Failing line numbers are
+  // links: they open the Rhymes tab on that line's last word.
+  renderFormChecklist(div, text, formId) {
+    div.empty();
+    if (!text.trim()) return;
+    const result = checkForm(text, formId, this.plugin.cmudictIndex);
+    if (!result) return;
+    const strict = result.rules.filter((r) => !r.advice);
+    const toCheck = result.rules.filter((r) => r.advice && !r.ok).length;
+    div.createDiv({
+      cls: 'pn-bilan-titre',
+      text: `${result.name}: ${strict.filter((r) => r.ok).length}/${strict.length} rules met` + (toCheck ? `, ${toCheck} point(s) to check` : ''),
+    });
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    result.rules.forEach((r) => {
+      const state = r.ok ? 'ok' : (r.advice ? 'conseil' : 'ko');
+      const row = div.createDiv({ cls: 'pn-bilan-regle pn-bilan-' + state });
+      row.createSpan({ cls: 'pn-bilan-icone', text: { ok: '✓', conseil: '⚠', ko: '✗' }[state] });
+      const body = row.createSpan();
+      body.appendText(r.label);
+      if (!r.ok && r.lines.length) {
+        body.appendText(' — line' + (r.lines.length > 1 ? 's ' : ' '));
+        r.lines.forEach((num, i) => {
+          if (i > 0) body.appendText(', ');
+          const word = lastWordOfLine(lines[num - 1] || '') || '';
+          const link = body.createEl('a', { cls: 'pn-bilan-vers', text: String(num), attr: { href: '#' } });
+          link.setAttr('title', word ? `Find rhymes for "${word}" (Rhymes tab)` : 'Line ' + num);
+          link.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (!word) return;
+            this.switchTab('rhymes');
+            if (this._prefillRhymes) this._prefillRhymes(word);
+          });
+        });
+      }
+      if (!r.ok && r.detail) body.appendText(` (${r.detail})`);
+    });
+  }
+
   async runAnalysis(text, analysisDiv, schemaDiv, totalBar, showColors, continuous) {
     analysisDiv.empty();
     schemaDiv.empty();
@@ -2026,6 +2292,27 @@ class PoetsNotebookView extends ItemView {
     const perfectToggle = makeTogglePill(typeDiv, 'Perfect', true, 'Stressed vowel and everything after it match exactly (light / flight).');
     const nearToggle = makeTogglePill(typeDiv, 'Near / slant', !this.plugin.settings.strictRhymeMode, 'Close but not identical sounds: consonance or assonance (shape / keep).');
 
+    filtersBox.createDiv({ cls: 'pn-filtres-separateur' });
+    // Part of speech: CMUdict has none, so this filter relies on Datamuse
+    // (it also tags the CMUdict words it knows). A word whose part of speech
+    // is unknown is never hidden — the filter only acts on what is known,
+    // as in the French plugin.
+    const lineNature = filtersBox.createDiv({ cls: 'pn-filtres-ligne' });
+    lineNature.createSpan({ cls: 'pn-filtres-ligne-label', text: 'Part of speech: ' });
+    const natureDiv = lineNature.createDiv({ cls: 'pn-cgram-filtres' });
+    const NATURES = [['n', 'Noun', '#2980b9'], ['v', 'Verb', '#c0392b'], ['adj', 'Adjective', '#27ae60'], ['adv', 'Adverb', '#8e44ad']];
+    const natureToggles = {};
+    NATURES.forEach(([id, label, color]) => {
+      const input = makeTogglePill(natureDiv, label, true, null, 'pn-cgram-pill');
+      input.parentElement.style.setProperty('--ccolor', color);
+      natureToggles[id] = input;
+    });
+    const syncNatureHint = (online) => {
+      lineNature.style.opacity = online ? '1' : '0.5';
+      lineNature.setAttr('title', online ? 'Words whose part of speech is unknown are always kept.'
+        : 'Needs Datamuse (tick it below): CMUdict has no part of speech.');
+    };
+
     const sourcesBox = panel.createDiv({ cls: 'pn-boite pn-sources' });
     sourcesBox.createSpan({ cls: 'pn-sources-label', text: 'Complete online: ' });
     const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse', (this.plugin.settings.onlineSources || []).includes('rhymes'),
@@ -2046,6 +2333,7 @@ class PoetsNotebookView extends ItemView {
       perfect: perfectToggle.checked,
       near: nearToggle.checked,
       online: datamuseToggle.checked,
+      pos: new Set(Object.keys(natureToggles).filter((id) => natureToggles[id].checked)),
     });
 
     searchBtn.addEventListener('click', doSearch);
@@ -2053,9 +2341,12 @@ class PoetsNotebookView extends ItemView {
     letterInput.addEventListener('input', doSearch);
     syllSelect.addEventListener('change', doSearch);
     perfectToggle.addEventListener('change', doSearch);
+    Object.values(natureToggles).forEach((t) => t.addEventListener('change', doSearch));
+    syncNatureHint(datamuseToggle.checked);
     nearToggle.addEventListener('change', doSearch);
     datamuseToggle.addEventListener('change', async () => {
       await this.plugin.setOnlineSource('rhymes', datamuseToggle.checked);
+      syncNatureHint(datamuseToggle.checked);
       doSearch();
     });
 
@@ -2079,6 +2370,29 @@ class PoetsNotebookView extends ItemView {
     };
     const letterMatch = (w) => !f.letter || w.toLowerCase().startsWith(f.letter.toLowerCase());
 
+    // Online first when ticked: besides its own matches, Datamuse gives the
+    // part of speech of the CMUdict words it knows, used by the filter.
+    let online = null, onlineError = false;
+    if (f.online) {
+      container.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
+      try {
+        const [perfect, near] = await Promise.all([
+          f.perfect ? fetchDatamuseRhymes(word, false, 1000) : Promise.resolve([]),
+          showNear ? fetchDatamuseRhymes(word, true, 1000) : Promise.resolve([]),
+        ]);
+        online = { perfect, near };
+      } catch (e) { onlineError = true; }
+      container.empty();
+    }
+    const posOf = new Map();
+    if (online) [...online.perfect, ...online.near].forEach((d) => { if (d.pos.length) posOf.set(d.word.toLowerCase(), d.pos); });
+    const allPos = !f.pos || f.pos.size === 4;
+    const posMatch = (w) => {
+      if (allPos || !f.online) return true;
+      const tags = posOf.get(w.toLowerCase());
+      return !tags || tags.some((t) => f.pos.has(t));
+    };
+
     const localBody = makeSourceBlock(container, `${word} — CMUdict`, true, true);
     const local = idx ? searchLocalRhymes(word, idx, { letter: f.letter, syllables: null }) : null;
     if (!idx) {
@@ -2086,8 +2400,9 @@ class PoetsNotebookView extends ItemView {
     } else if (!local) {
       localBody.createEl('p', { cls: 'pn-vide', text: `"${word}" wasn't found in CMUdict, so its rhyme sound is unknown. Try another spelling.` });
     } else {
-      const perfect = f.perfect ? local.perfect.filter((r) => sylMatch(r.syllableCount)).map((r) => r.word) : [];
-      const near = showNear ? local.near.filter((r) => sylMatch(r.syllableCount)).map((r) => r.word) : [];
+      const keep = (list) => list.filter((r) => sylMatch(r.syllableCount) && posMatch(r.word)).map((r) => r.word);
+      const perfect = f.perfect ? keep(local.perfect) : [];
+      const near = showNear ? keep(local.near) : [];
       if (perfect.length === 0 && near.length === 0) {
         localBody.createEl('p', { cls: 'pn-vide', text: 'No word matches these filters.' });
       }
@@ -2102,31 +2417,25 @@ class PoetsNotebookView extends ItemView {
 
     if (!f.online) return;
     const onlineBody = makeSourceBlock(container, `${word} — Datamuse`, true, false);
-    const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
-    try {
-      const [perfect, near] = await Promise.all([
-        f.perfect ? fetchDatamuseRhymes(word, false) : Promise.resolve([]),
-        showNear ? fetchDatamuseRhymes(word, true) : Promise.resolve([]),
-      ]);
-      status.remove();
-      const known = new Set(local ? [...local.perfect, ...local.near].map((r) => r.word) : []);
-      const keep = (list) => list
-        .filter((d) => !known.has(d.word.toLowerCase()) && letterMatch(d.word) && sylMatch(d.numSyllables || 0))
-        .map((d) => d.word);
-      const extraPerfect = keep(perfect);
-      const extraNear = keep(near);
-      if (extraPerfect.length === 0 && extraNear.length === 0) {
-        onlineBody.createEl('p', { cls: 'pn-vide', text: 'Nothing more than CMUdict for these filters.' });
-        return;
-      }
-      makeWordGroup(onlineBody, 'Perfect (not already listed)', extraPerfect, 'pn-mot', idx);
-      if (extraNear.length) {
-        onlineBody.createDiv({ cls: 'pn-titre pn-label-assonance', text: `Near / slant (${extraNear.length})` });
-        const words = onlineBody.createDiv({ cls: 'pn-mots' });
-        showWithLimit(words, extraNear, (w) => makeWordChip(words, w, 'pn-mot pn-mot-assonance', idx));
-      }
-    } catch (e) {
-      status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
+    if (onlineError) {
+      onlineBody.createEl('p', { cls: 'pn-vide', text: 'Datamuse: search impossible (no connection, site unreachable, or timeout).' });
+      return;
+    }
+    const known = new Set(local ? [...local.perfect, ...local.near].map((r) => r.word) : []);
+    const keepOnline = (list) => list
+      .filter((d) => !known.has(d.word.toLowerCase()) && letterMatch(d.word) && sylMatch(d.numSyllables || 0) && posMatch(d.word))
+      .map((d) => d.word);
+    const extraPerfect = keepOnline(online.perfect);
+    const extraNear = keepOnline(online.near);
+    if (extraPerfect.length === 0 && extraNear.length === 0) {
+      onlineBody.createEl('p', { cls: 'pn-vide', text: 'Nothing more than CMUdict for these filters.' });
+      return;
+    }
+    makeWordGroup(onlineBody, 'Perfect (not already listed)', extraPerfect, 'pn-mot', idx);
+    if (extraNear.length) {
+      onlineBody.createDiv({ cls: 'pn-titre pn-label-assonance', text: `Near / slant (${extraNear.length})` });
+      const words = onlineBody.createDiv({ cls: 'pn-mots' });
+      showWithLimit(words, extraNear, (w) => makeWordChip(words, w, 'pn-mot pn-mot-assonance', idx));
     }
   }
   // ---- Synonyms tab ----

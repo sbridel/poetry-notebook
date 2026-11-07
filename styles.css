@@ -368,6 +368,8 @@
    ============================================================ */
 .pn-banner{ background: var(--background-modifier-error, #4a2020); color: var(--text-on-accent, #fff); padding: 8px 10px; border-radius: 6px; font-size: 0.85em; margin: 0 0 10px; }
 .pn-experimental-tag{ font-size: 0.65em; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-faint); border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 1px 5px; margin-left: 2px; }
+.pn-sources:not(.pn-boite){ margin-bottom: 10px; }
+.pn-cgram-pill.is-checked{ border-color: var(--ccolor); color: var(--ccolor); }
 .pn-guide-table{ border-collapse: collapse; margin: 8px 0; width: 100%; font-size: 0.86em; }
 .pn-guide-table th, .pn-guide-table td{ border: 1px solid var(--background-modifier-border); padding: 4px 8px; text-align: left; }
 .pn-guide-table th{ background: var(--background-secondary); }
