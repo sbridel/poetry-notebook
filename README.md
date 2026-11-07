@@ -69,9 +69,13 @@ it. You can also add entries by hand. Saved entries can be removed with the
 × button.
 
 ### Definitions
-On-demand lookup (nothing is fetched until you search) against English
-Wiktionary: etymology and definitions grouped by part of speech. A "View on
-Wiktionary ↗" link is always shown alongside the parsed result.
+On-demand lookup (nothing is fetched until you search), with two sources
+switched by pills, like the French plugin's dictionaries: the **Free
+Dictionary API** (dictionaryapi.dev, built on Wiktionary — pronunciation,
+definitions with examples, synonyms/antonyms per part of speech), tried
+first, and the **English Wiktionary** page itself (etymology and definitions),
+used automatically when the first has no entry. An "Open on Wiktionary ↗"
+link is always available.
 
 ### Inspiration
 Type a common word (forest, sea, night, love, time, fire, weather,
@@ -99,6 +103,11 @@ Poète: framed filter boxes, a "complete online" box whose ticked sources are
 remembered, and results in collapsible blocks, one per source (personal or
 built-in data first, then each online source). Online word lists can be
 clicked to leave a word out before saving them to your personal dictionary.
+In Synonyms, Datamuse results carry a relevance (Datamuse's score rescaled to
+0-100 against the best match): a threshold (All / 30% / 60% / 85%) hides the
+weaker ones, and strong matches (70+) are shown in bold. In Inspiration, the
+Datamuse block also gives collocations — adjectives often used with the word,
+nouns it often qualifies, and words often found near it.
 In Inspiration, clicking words builds a selection (kept across searches)
 that can be added to a personal theme or as rare words.
 

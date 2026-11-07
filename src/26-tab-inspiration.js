@@ -6,8 +6,24 @@
   renderInspirationTab(panel) {
     const sourcesBox = panel.createDiv({ cls: 'pn-sources' });
     sourcesBox.createSpan({ cls: 'pn-sources-label', text: 'Complete online: ' });
-    const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse (means like)', (this.plugin.settings.onlineSources || []).includes('inspiration'),
-      'Adds loosely related words from Datamuse. Never queried unless checked.');
+    const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse', (this.plugin.settings.onlineSources || []).includes('inspiration'),
+      'Adds related words and collocations (adjectives used with the word, nouns it qualifies, words found near it) from Datamuse. Never queried unless checked.');
+
+    // Colour legend for the online groups (same presentation as the French
+    // plugin), closed by default.
+    const legend = panel.createEl('details', { cls: 'pn-hasard-stats-details pn-inspi-legende' });
+    legend.createEl('summary', { text: 'Show the legend' });
+    [
+      ['lexical', 'Related words', 'words with a similar meaning (Datamuse "means like")'],
+      ['carac', 'Often described as', 'adjectives frequently used with the word'],
+      ['parties', 'Often describes', 'nouns the word frequently qualifies'],
+      ['famille', 'Often found near', 'words statistically found close to it in text'],
+    ].forEach(([key, name, detail]) => {
+      const row = legend.createDiv({ cls: `pn-inspi-legende-ligne pn-nature-${key}` });
+      row.createSpan({ cls: 'pn-inspi-pastille' });
+      row.createSpan({ cls: 'pn-inspi-legende-nom', text: name });
+      row.createSpan({ cls: 'pn-inspi-legende-detail', text: ' — ' + detail });
+    });
 
     const form = panel.createDiv({ cls: 'pn-rime-form' });
     const wordInput = form.createEl('input', { attr: { type: 'text', placeholder: 'A theme… (e.g. forest, sea, night, love, time)' } });
@@ -143,14 +159,20 @@
     const onlineBody = makeSourceBlock(results, `${word} — Datamuse`, true, false);
     const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
     try {
-      const related = await fetchDatamuseMeansLike(word);
+      const [related, coll] = await Promise.all([fetchDatamuseMeansLike(word), fetchDatamuseCollocations(word)]);
       status.remove();
-      if (related.length === 0) { onlineBody.createEl('p', { cls: 'pn-vide', text: `Nothing found on Datamuse for "${word}".` }); return; }
+      const groups = [
+        ['Related words', related, 'pn-nature-lexical'],
+        [`Often described as… (adjectives used with "${word}")`, coll.describedAs, 'pn-nature-carac'],
+        [`Often describes… (nouns "${word}" qualifies)`, coll.describes, 'pn-nature-parties'],
+        ['Often found near', coll.triggers, 'pn-nature-famille'],
+      ].filter(([, list]) => list.length > 0);
+      if (groups.length === 0) { onlineBody.createEl('p', { cls: 'pn-vide', text: `Nothing found on Datamuse for "${word}".` }); return; }
       const suggestedTheme = word.charAt(0).toUpperCase() + word.slice(1);
-      makeWordGroup(onlineBody, 'Related words', related, 'pn-mot pn-mot-inspi', this.plugin.cmudictIndex, {
-        extraCls: 'pn-nature-lexical',
+      groups.forEach(([title, list, nature]) => makeWordGroup(onlineBody, title, list, 'pn-mot pn-mot-inspi', this.plugin.cmudictIndex, {
+        extraCls: nature,
         onChip: (span, w) => makeSelectable(span, w, suggestedTheme, ''),
-      });
+      }));
     } catch (e) {
       status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
     }

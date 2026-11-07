@@ -7,6 +7,11 @@
 // ============================================================
 const WORDS_SHOWN_CAP = 15;
 
+// A word list item is either a plain string or { word, rank } when the
+// source gives a relevance (0-100, or null when unknown).
+function itemText(item) { return typeof item === 'string' ? item : (item ? item.word : ''); }
+function itemRank(item) { return (item && typeof item === 'object' && typeof item.rank === 'number') ? item.rank : null; }
+
 function syllablesOfExpression(expr, cmudictIndex) {
   return (expr || '').trim().split(/\s+/).filter(Boolean)
     .reduce((n, w) => n + (lookupWord(w, cmudictIndex, null).syllableCount || 0), 0);
@@ -29,14 +34,14 @@ function filterBySyllables(list, value, cmudictIndex) {
   if (!value) return list || [];
   const target = value === '5+' ? null : parseInt(value, 10);
   return (list || []).filter((w) => {
-    const n = syllablesOfExpression(w, cmudictIndex);
+    const n = syllablesOfExpression(itemText(w), cmudictIndex);
     return target === null ? n >= 5 : n === target;
   });
 }
 
 function filterByRhyme(list, target, cmudictIndex) {
   if (!target) return list || [];
-  return (list || []).filter((w) => wordsRhyme(target, lastWordOfExpression(w), cmudictIndex));
+  return (list || []).filter((w) => wordsRhyme(target, lastWordOfExpression(itemText(w)), cmudictIndex));
 }
 
 function makeSyllableSelect(parent) {
@@ -69,16 +74,22 @@ function makeSourceBlock(container, title, open, local) {
 // One word chip with its syllable count as a superscript. With an
 // `excluded` Set, clicking the chip toggles it in/out of that set
 // (greyed + struck through) — used before saving online results.
-function makeWordChip(parent, word, cls, cmudictIndex, excluded) {
+function makeWordChip(parent, item, cls, cmudictIndex, excluded) {
+  const word = itemText(item);
+  const rank = itemRank(item);
   const span = parent.createSpan({ cls, text: word });
+  if (rank !== null && rank >= 70) span.style.fontWeight = '700';
   span.createEl('sup', { text: String(syllablesOfExpression(word, cmudictIndex)) });
+  const rankNote = rank !== null ? `Relevance (Datamuse, rescaled): ${rank}/100` : '';
   if (excluded) {
     span.addClass('pn-mot-excluable');
-    span.setAttr('title', 'Click to leave this word out before saving to your personal dictionary (click again to undo).');
+    span.setAttr('title', (rankNote ? rankNote + ' — ' : '') + 'click to leave this word out before saving to your personal dictionary (click again to undo).');
     span.addEventListener('click', () => {
       if (excluded.has(word)) { excluded.delete(word); span.removeClass('pn-mot-exclu'); }
       else { excluded.add(word); span.addClass('pn-mot-exclu'); }
     });
+  } else if (rankNote) {
+    span.setAttr('title', rankNote);
   }
   return span;
 }
@@ -104,7 +115,7 @@ function makeWordGroup(container, title, list, chipCls, cmudictIndex, opts) {
   const words = g.createDiv({ cls: 'pn-mots' });
   showWithLimit(words, list, (w) => {
     const span = makeWordChip(words, w, chipCls, cmudictIndex, o.excluded);
-    if (o.onChip) o.onChip(span, w);
+    if (o.onChip) o.onChip(span, itemText(w));
   });
   return g;
 }

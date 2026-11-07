@@ -92,31 +92,64 @@
     const onlineBody = makeSourceBlock(container, `${word} — Datamuse`, true, false);
     const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
     try {
-      const [s, a] = await Promise.all([fetchDatamuseSynonyms(word), fetchDatamuseAntonyms(word)]);
+      const [s, a] = await Promise.all([fetchDatamuseSynonymsRanked(word), fetchDatamuseAntonymsRanked(word)]);
       status.remove();
       const savedSyn = new Set(((dict.synonyms || {})[key] || []).map((w) => w.toLowerCase()));
       const savedAnt = new Set(((dict.antonyms || {})[key] || []).map((w) => w.toLowerCase()));
-      const synOnline = applyFilters(s.filter((w) => w.toLowerCase() !== key && !savedSyn.has(w.toLowerCase())));
-      const antOnline = applyFilters(a.filter((w) => w.toLowerCase() !== key && !savedAnt.has(w.toLowerCase())));
-      if (synOnline.length === 0 && antOnline.length === 0) {
+      const fresh = (list, saved) => list.filter((i) => i.word.toLowerCase() !== key && !saved.has(i.word.toLowerCase()));
+      const synAll = fresh(s, savedSyn);
+      const antAll = fresh(a, savedAnt);
+      if (synAll.length === 0 && antAll.length === 0) {
         onlineBody.createEl('p', { cls: 'pn-vide', text: `Nothing new found on Datamuse for "${word}".` });
         return;
       }
-      const exclSyn = new Set();
-      const exclAnt = new Set();
-      makeWordGroup(onlineBody, 'Synonyms', synOnline, 'pn-mot pn-mot-syno', idx, { type: 'syno', excluded: exclSyn });
-      makeWordGroup(onlineBody, 'Antonyms', antOnline, 'pn-mot pn-mot-anto', idx, { type: 'anto', excluded: exclAnt });
-      const saveBtn = onlineBody.createEl('button', { cls: 'pn-link-btn', text: '💾 Save to my personal dictionary' });
-      saveBtn.setAttr('title', 'Saves everything shown above, except the greyed/struck-through words (click a word to leave it out).');
-      saveBtn.addEventListener('click', async () => {
-        saveBtn.disabled = true;
-        saveBtn.setText('Saving…');
-        let ok = true;
-        for (const w of synOnline) if (!exclSyn.has(w)) ok = (await this.plugin.addSynonymToPersonalDictionary(word, w)).ok && ok;
-        for (const w of antOnline) if (!exclAnt.has(w)) ok = (await this.plugin.addAntonymToPersonalDictionary(word, w)).ok && ok;
-        saveBtn.setText(ok ? 'Saved ✓' : '💾 Retry saving');
-        if (!ok) saveBtn.disabled = false;
+
+      // Relevance threshold, same steps as the French plugin's CNRTL source.
+      let threshold = 30;
+      const thresholdDiv = onlineBody.createDiv({ cls: 'pn-cnrtl-seuil' });
+      thresholdDiv.createSpan({ cls: 'pn-sources-label', text: 'Relevance threshold: ' });
+      thresholdDiv.setAttr('title', 'Datamuse scores rescaled to 0-100 against the best match of each list. Bold = 70 or more.');
+      const steps = [['All', 0], ['30%', 30], ['60%', 60], ['85%', 85]].map(([label, value]) => {
+        const b = thresholdDiv.createEl('button', { cls: 'pn-hasard-toggle-pool', text: label });
+        if (value === threshold) b.addClass('active');
+        b.addEventListener('click', () => {
+          threshold = value;
+          steps.forEach((x) => x.removeClass('active'));
+          b.addClass('active');
+          renderChips();
+        });
+        return b;
       });
+      const chipsZone = onlineBody.createDiv();
+      const saveZone = onlineBody.createDiv();
+
+      const renderChips = () => {
+        chipsZone.empty();
+        saveZone.empty();
+        const pass = (i) => i.rank === null || i.rank >= threshold;
+        const synOnline = applyFilters(synAll.filter(pass));
+        const antOnline = applyFilters(antAll.filter(pass));
+        if (synOnline.length === 0 && antOnline.length === 0) {
+          chipsZone.createEl('p', { cls: 'pn-vide', text: 'No Datamuse result matches these filters.' });
+          return;
+        }
+        const exclSyn = new Set();
+        const exclAnt = new Set();
+        makeWordGroup(chipsZone, 'Synonyms', synOnline, 'pn-mot pn-mot-syno', idx, { type: 'syno', excluded: exclSyn });
+        makeWordGroup(chipsZone, 'Antonyms', antOnline, 'pn-mot pn-mot-anto', idx, { type: 'anto', excluded: exclAnt });
+        const saveBtn = saveZone.createEl('button', { cls: 'pn-link-btn', text: '💾 Save to my personal dictionary' });
+        saveBtn.setAttr('title', 'Saves everything shown above, except the greyed/struck-through words (click a word to leave it out).');
+        saveBtn.addEventListener('click', async () => {
+          saveBtn.disabled = true;
+          saveBtn.setText('Saving…');
+          let ok = true;
+          for (const i of synOnline) if (!exclSyn.has(i.word)) ok = (await this.plugin.addSynonymToPersonalDictionary(word, i.word)).ok && ok;
+          for (const i of antOnline) if (!exclAnt.has(i.word)) ok = (await this.plugin.addAntonymToPersonalDictionary(word, i.word)).ok && ok;
+          saveBtn.setText(ok ? 'Saved ✓' : '💾 Retry saving');
+          if (!ok) saveBtn.disabled = false;
+        });
+      };
+      renderChips();
     } catch (e) {
       status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
     }

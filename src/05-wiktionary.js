@@ -80,3 +80,43 @@ async function fetchWiktionaryEntry(word) {
   return parseWiktionaryExtract(page.extract);
 }
 
+
+// Free Dictionary API (dictionaryapi.dev): no key, built on Wiktionary,
+// returns clean JSON — phonetics, parts of speech, definitions with
+// examples, synonyms/antonyms. Used first by the Definitions tab; the
+// Wiktionary extract parser above stays as the second source.
+// Returns null when the word has no entry.
+async function fetchFreeDictionaryEntry(word) {
+  const url = `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word.toLowerCase())}`;
+  const res = await requestUrl({ url, throw: false });
+  if (res.status === 404) return null;
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+  const data = res.json;
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const phonetics = new Set();
+  const origins = [];
+  const byPos = new Map();
+  for (const entry of data) {
+    if (entry.phonetic) phonetics.add(entry.phonetic);
+    (entry.phonetics || []).forEach((p) => p && p.text && phonetics.add(p.text));
+    if (entry.origin) origins.push(entry.origin);
+    for (const m of (entry.meanings || [])) {
+      const pos = m.partOfSpeech || 'other';
+      if (!byPos.has(pos)) byPos.set(pos, { pos, definitions: [], synonyms: new Set(), antonyms: new Set() });
+      const g = byPos.get(pos);
+      (m.synonyms || []).forEach((s) => g.synonyms.add(s));
+      (m.antonyms || []).forEach((s) => g.antonyms.add(s));
+      for (const d of (m.definitions || [])) {
+        if (!d.definition) continue;
+        g.definitions.push({ text: d.definition, example: d.example || '' });
+        (d.synonyms || []).forEach((s) => g.synonyms.add(s));
+        (d.antonyms || []).forEach((s) => g.antonyms.add(s));
+      }
+    }
+  }
+  return {
+    phonetics: [...phonetics],
+    origin: origins.join(' '),
+    groups: [...byPos.values()].map((g) => ({ ...g, synonyms: [...g.synonyms], antonyms: [...g.antonyms] })),
+  };
+}

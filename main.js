@@ -874,6 +874,55 @@ async function fetchDatamuseAntonyms(word) {
   return Array.isArray(data) ? data.map((d) => d.word) : [];
 }
 
+
+// Generic Datamuse query returning [{ word, score }] (score may be
+// undefined). `params` is a query string such as "rel_jjb=night".
+async function fetchDatamuse(params, max) {
+  const url = `https://api.datamuse.com/words?${params}&max=${max || 50}`;
+  const res = await requestUrl({
+    url,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+    },
+  });
+  const data = res.json;
+  return Array.isArray(data) ? data.filter((d) => d && d.word).map((d) => ({ word: d.word, score: d.score })) : [];
+}
+
+// Datamuse scores are relative (not percentages): rescale each list to
+// 0-100 against its best score, so the Synonyms tab can offer the same
+// relevance threshold as the French plugin's CNRTL source. Words without
+// a score get rank null (never hidden by the threshold).
+function withRelevanceRank(items) {
+  const max = Math.max(0, ...items.map((i) => (typeof i.score === 'number' ? i.score : 0)));
+  return items.map((i) => ({
+    word: i.word,
+    rank: (typeof i.score === 'number' && max > 0) ? Math.round((100 * i.score) / max) : null,
+  }));
+}
+
+async function fetchDatamuseSynonymsRanked(word) {
+  return withRelevanceRank(await fetchDatamuse(`rel_syn=${encodeURIComponent(word.toLowerCase())}`, 50));
+}
+async function fetchDatamuseAntonymsRanked(word) {
+  return withRelevanceRank(await fetchDatamuse(`rel_ant=${encodeURIComponent(word.toLowerCase())}`, 50));
+}
+
+// Collocations for the Inspiration tab (English counterpart of the CNRTL
+// collocations used by the French plugin):
+//   describedAs — adjectives often used with the word as a noun (night → dark, starry)
+//   describes   — nouns the word often qualifies as an adjective (dark → night, room)
+//   triggers    — words statistically found near it in text
+async function fetchDatamuseCollocations(word) {
+  const w = encodeURIComponent(word.toLowerCase());
+  const [describedAs, describes, triggers] = await Promise.all([
+    fetchDatamuse(`rel_jjb=${w}`, 40),
+    fetchDatamuse(`rel_jja=${w}`, 40),
+    fetchDatamuse(`rel_trg=${w}`, 40),
+  ]);
+  const words = (l) => l.map((i) => i.word);
+  return { describedAs: words(describedAs), describes: words(describes), triggers: words(triggers) };
+}
 // ============================================================
 // Wiktionary (English) — definitions + etymology, on demand only.
 // Uses the plain-text `extracts` endpoint (explaintext=1) rather than raw
@@ -956,6 +1005,46 @@ async function fetchWiktionaryEntry(word) {
   return parseWiktionaryExtract(page.extract);
 }
 
+
+// Free Dictionary API (dictionaryapi.dev): no key, built on Wiktionary,
+// returns clean JSON — phonetics, parts of speech, definitions with
+// examples, synonyms/antonyms. Used first by the Definitions tab; the
+// Wiktionary extract parser above stays as the second source.
+// Returns null when the word has no entry.
+async function fetchFreeDictionaryEntry(word) {
+  const url = `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word.toLowerCase())}`;
+  const res = await requestUrl({ url, throw: false });
+  if (res.status === 404) return null;
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+  const data = res.json;
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const phonetics = new Set();
+  const origins = [];
+  const byPos = new Map();
+  for (const entry of data) {
+    if (entry.phonetic) phonetics.add(entry.phonetic);
+    (entry.phonetics || []).forEach((p) => p && p.text && phonetics.add(p.text));
+    if (entry.origin) origins.push(entry.origin);
+    for (const m of (entry.meanings || [])) {
+      const pos = m.partOfSpeech || 'other';
+      if (!byPos.has(pos)) byPos.set(pos, { pos, definitions: [], synonyms: new Set(), antonyms: new Set() });
+      const g = byPos.get(pos);
+      (m.synonyms || []).forEach((s) => g.synonyms.add(s));
+      (m.antonyms || []).forEach((s) => g.antonyms.add(s));
+      for (const d of (m.definitions || [])) {
+        if (!d.definition) continue;
+        g.definitions.push({ text: d.definition, example: d.example || '' });
+        (d.synonyms || []).forEach((s) => g.synonyms.add(s));
+        (d.antonyms || []).forEach((s) => g.antonyms.add(s));
+      }
+    }
+  }
+  return {
+    phonetics: [...phonetics],
+    origin: origins.join(' '),
+    groups: [...byPos.values()].map((g) => ({ ...g, synonyms: [...g.synonyms], antonyms: [...g.antonyms] })),
+  };
+}
 // ============================================================
 // Inspiration / Random: built-in rare & literary vocabulary, organized by
 // theme. Written from scratch for English poetry — not a translation of
@@ -1210,6 +1299,11 @@ async function fetchDatamuseMeansLike(word) {
 // ============================================================
 const WORDS_SHOWN_CAP = 15;
 
+// A word list item is either a plain string or { word, rank } when the
+// source gives a relevance (0-100, or null when unknown).
+function itemText(item) { return typeof item === 'string' ? item : (item ? item.word : ''); }
+function itemRank(item) { return (item && typeof item === 'object' && typeof item.rank === 'number') ? item.rank : null; }
+
 function syllablesOfExpression(expr, cmudictIndex) {
   return (expr || '').trim().split(/\s+/).filter(Boolean)
     .reduce((n, w) => n + (lookupWord(w, cmudictIndex, null).syllableCount || 0), 0);
@@ -1232,14 +1326,14 @@ function filterBySyllables(list, value, cmudictIndex) {
   if (!value) return list || [];
   const target = value === '5+' ? null : parseInt(value, 10);
   return (list || []).filter((w) => {
-    const n = syllablesOfExpression(w, cmudictIndex);
+    const n = syllablesOfExpression(itemText(w), cmudictIndex);
     return target === null ? n >= 5 : n === target;
   });
 }
 
 function filterByRhyme(list, target, cmudictIndex) {
   if (!target) return list || [];
-  return (list || []).filter((w) => wordsRhyme(target, lastWordOfExpression(w), cmudictIndex));
+  return (list || []).filter((w) => wordsRhyme(target, lastWordOfExpression(itemText(w)), cmudictIndex));
 }
 
 function makeSyllableSelect(parent) {
@@ -1272,16 +1366,22 @@ function makeSourceBlock(container, title, open, local) {
 // One word chip with its syllable count as a superscript. With an
 // `excluded` Set, clicking the chip toggles it in/out of that set
 // (greyed + struck through) — used before saving online results.
-function makeWordChip(parent, word, cls, cmudictIndex, excluded) {
+function makeWordChip(parent, item, cls, cmudictIndex, excluded) {
+  const word = itemText(item);
+  const rank = itemRank(item);
   const span = parent.createSpan({ cls, text: word });
+  if (rank !== null && rank >= 70) span.style.fontWeight = '700';
   span.createEl('sup', { text: String(syllablesOfExpression(word, cmudictIndex)) });
+  const rankNote = rank !== null ? `Relevance (Datamuse, rescaled): ${rank}/100` : '';
   if (excluded) {
     span.addClass('pn-mot-excluable');
-    span.setAttr('title', 'Click to leave this word out before saving to your personal dictionary (click again to undo).');
+    span.setAttr('title', (rankNote ? rankNote + ' — ' : '') + 'click to leave this word out before saving to your personal dictionary (click again to undo).');
     span.addEventListener('click', () => {
       if (excluded.has(word)) { excluded.delete(word); span.removeClass('pn-mot-exclu'); }
       else { excluded.add(word); span.addClass('pn-mot-exclu'); }
     });
+  } else if (rankNote) {
+    span.setAttr('title', rankNote);
   }
   return span;
 }
@@ -1307,7 +1407,7 @@ function makeWordGroup(container, title, list, chipCls, cmudictIndex, opts) {
   const words = g.createDiv({ cls: 'pn-mots' });
   showWithLimit(words, list, (w) => {
     const span = makeWordChip(words, w, chipCls, cmudictIndex, o.excluded);
-    if (o.onChip) o.onChip(span, w);
+    if (o.onChip) o.onChip(span, itemText(w));
   });
   return g;
 }
@@ -2132,31 +2232,64 @@ class PoetsNotebookView extends ItemView {
     const onlineBody = makeSourceBlock(container, `${word} — Datamuse`, true, false);
     const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
     try {
-      const [s, a] = await Promise.all([fetchDatamuseSynonyms(word), fetchDatamuseAntonyms(word)]);
+      const [s, a] = await Promise.all([fetchDatamuseSynonymsRanked(word), fetchDatamuseAntonymsRanked(word)]);
       status.remove();
       const savedSyn = new Set(((dict.synonyms || {})[key] || []).map((w) => w.toLowerCase()));
       const savedAnt = new Set(((dict.antonyms || {})[key] || []).map((w) => w.toLowerCase()));
-      const synOnline = applyFilters(s.filter((w) => w.toLowerCase() !== key && !savedSyn.has(w.toLowerCase())));
-      const antOnline = applyFilters(a.filter((w) => w.toLowerCase() !== key && !savedAnt.has(w.toLowerCase())));
-      if (synOnline.length === 0 && antOnline.length === 0) {
+      const fresh = (list, saved) => list.filter((i) => i.word.toLowerCase() !== key && !saved.has(i.word.toLowerCase()));
+      const synAll = fresh(s, savedSyn);
+      const antAll = fresh(a, savedAnt);
+      if (synAll.length === 0 && antAll.length === 0) {
         onlineBody.createEl('p', { cls: 'pn-vide', text: `Nothing new found on Datamuse for "${word}".` });
         return;
       }
-      const exclSyn = new Set();
-      const exclAnt = new Set();
-      makeWordGroup(onlineBody, 'Synonyms', synOnline, 'pn-mot pn-mot-syno', idx, { type: 'syno', excluded: exclSyn });
-      makeWordGroup(onlineBody, 'Antonyms', antOnline, 'pn-mot pn-mot-anto', idx, { type: 'anto', excluded: exclAnt });
-      const saveBtn = onlineBody.createEl('button', { cls: 'pn-link-btn', text: '💾 Save to my personal dictionary' });
-      saveBtn.setAttr('title', 'Saves everything shown above, except the greyed/struck-through words (click a word to leave it out).');
-      saveBtn.addEventListener('click', async () => {
-        saveBtn.disabled = true;
-        saveBtn.setText('Saving…');
-        let ok = true;
-        for (const w of synOnline) if (!exclSyn.has(w)) ok = (await this.plugin.addSynonymToPersonalDictionary(word, w)).ok && ok;
-        for (const w of antOnline) if (!exclAnt.has(w)) ok = (await this.plugin.addAntonymToPersonalDictionary(word, w)).ok && ok;
-        saveBtn.setText(ok ? 'Saved ✓' : '💾 Retry saving');
-        if (!ok) saveBtn.disabled = false;
+
+      // Relevance threshold, same steps as the French plugin's CNRTL source.
+      let threshold = 30;
+      const thresholdDiv = onlineBody.createDiv({ cls: 'pn-cnrtl-seuil' });
+      thresholdDiv.createSpan({ cls: 'pn-sources-label', text: 'Relevance threshold: ' });
+      thresholdDiv.setAttr('title', 'Datamuse scores rescaled to 0-100 against the best match of each list. Bold = 70 or more.');
+      const steps = [['All', 0], ['30%', 30], ['60%', 60], ['85%', 85]].map(([label, value]) => {
+        const b = thresholdDiv.createEl('button', { cls: 'pn-hasard-toggle-pool', text: label });
+        if (value === threshold) b.addClass('active');
+        b.addEventListener('click', () => {
+          threshold = value;
+          steps.forEach((x) => x.removeClass('active'));
+          b.addClass('active');
+          renderChips();
+        });
+        return b;
       });
+      const chipsZone = onlineBody.createDiv();
+      const saveZone = onlineBody.createDiv();
+
+      const renderChips = () => {
+        chipsZone.empty();
+        saveZone.empty();
+        const pass = (i) => i.rank === null || i.rank >= threshold;
+        const synOnline = applyFilters(synAll.filter(pass));
+        const antOnline = applyFilters(antAll.filter(pass));
+        if (synOnline.length === 0 && antOnline.length === 0) {
+          chipsZone.createEl('p', { cls: 'pn-vide', text: 'No Datamuse result matches these filters.' });
+          return;
+        }
+        const exclSyn = new Set();
+        const exclAnt = new Set();
+        makeWordGroup(chipsZone, 'Synonyms', synOnline, 'pn-mot pn-mot-syno', idx, { type: 'syno', excluded: exclSyn });
+        makeWordGroup(chipsZone, 'Antonyms', antOnline, 'pn-mot pn-mot-anto', idx, { type: 'anto', excluded: exclAnt });
+        const saveBtn = saveZone.createEl('button', { cls: 'pn-link-btn', text: '💾 Save to my personal dictionary' });
+        saveBtn.setAttr('title', 'Saves everything shown above, except the greyed/struck-through words (click a word to leave it out).');
+        saveBtn.addEventListener('click', async () => {
+          saveBtn.disabled = true;
+          saveBtn.setText('Saving…');
+          let ok = true;
+          for (const i of synOnline) if (!exclSyn.has(i.word)) ok = (await this.plugin.addSynonymToPersonalDictionary(word, i.word)).ok && ok;
+          for (const i of antOnline) if (!exclAnt.has(i.word)) ok = (await this.plugin.addAntonymToPersonalDictionary(word, i.word)).ok && ok;
+          saveBtn.setText(ok ? 'Saved ✓' : '💾 Retry saving');
+          if (!ok) saveBtn.disabled = false;
+        });
+      };
+      renderChips();
     } catch (e) {
       status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
     }
@@ -2178,54 +2311,112 @@ class PoetsNotebookView extends ItemView {
 
     const results = panel.createDiv({ cls: 'pn-resultats' });
 
+    // Two sources, switched with pills like the French plugin's CNRTL
+    // dictionaries: Free Dictionary API (clean JSON, first) and the
+    // Wiktionary page extract (fallback, has etymology more often).
+    const SOURCES = [
+      { id: 'freedict', label: 'Free Dictionary', render: (zone, word) => this.renderFreeDictionary(zone, word) },
+      { id: 'wiktionary', label: 'Wiktionary', render: (zone, word) => this.renderWiktionaryDefinition(zone, word) },
+    ];
+
     const doSearch = async () => {
       const word = wordInput.value.trim();
       results.empty();
       if (!word) return;
       syncLink();
-      results.createDiv({ cls: 'pn-son-label', text: `${word} — Wiktionary` });
-      const zone = results.createDiv();
-      const status = zone.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
-
-      let entry = null;
-      try {
-        entry = await fetchWiktionaryEntry(word);
-      } catch (e) {
-        status.setText('Wiktionary: search impossible (no connection, site unreachable, or timeout).');
-        return;
-      }
-      status.remove();
-      const url = `https://en.wiktionary.org/wiki/${encodeURIComponent(word)}`;
-      if (!entry) {
-        zone.createEl('p', { cls: 'pn-vide', text: `"${word}" has no English entry on Wiktionary.` });
-        return;
-      }
-      zone.createEl('a', { cls: 'pn-cnrtl-lien', text: `See "${word}" on Wiktionary →`, attr: { href: url, target: '_blank', rel: 'noopener' } });
-
-      if (entry.etymology) {
-        const block = zone.createDiv({ cls: 'pn-cnrtl-bloc' });
-        block.createDiv({ cls: 'pn-cnrtl-titre', text: 'Etymology' });
-        block.createEl('p', { cls: 'pn-cnrtl-texte', text: entry.etymology });
-      }
-
-      if (entry.definitions.length === 0) {
-        zone.createEl('p', { cls: 'pn-vide', text: 'No definitions parsed for this word — the Wiktionary page may use an unusual layout. Use the link above to read it directly.' });
-      }
-      entry.definitions.forEach((group, i) => {
-        const det = zone.createEl('details', { cls: 'pn-cnrtl-details' });
-        if (i === 0) det.setAttr('open', 'true');
-        det.createEl('summary', { cls: 'pn-cnrtl-details-titre', text: group.pos });
-        const body = det.createDiv({ cls: 'pn-cnrtl-texte' });
-        const numbered = group.lines.filter((l) => /^\d+\.\s/.test(l));
-        const list = body.createEl('ol');
-        (numbered.length > 0 ? numbered : group.lines).forEach((line) => list.createEl('li', { text: line.replace(/^\d+\.\s*/, '') }));
+      results.createDiv({ cls: 'pn-son-label', text: word });
+      const pills = results.createDiv({ cls: 'pn-cnrtl-source-pills' });
+      const zone = results.createDiv({ cls: 'pn-cnrtl-source-zone' });
+      const buttons = [];
+      const show = async (src) => {
+        buttons.forEach(({ b, id }) => b.toggleClass('active', id === src.id));
+        zone.empty();
+        const status = zone.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
+        let found = false;
+        try {
+          found = await src.render(zone, word);
+          status.remove();
+        } catch (e) {
+          status.setText(`${src.label}: search impossible (no connection, site unreachable, or timeout).`);
+          return false;
+        }
+        if (!found) zone.createEl('p', { cls: 'pn-vide', text: `"${word}" has no English entry on ${src.label}.` });
+        return found;
+      };
+      SOURCES.forEach((src) => {
+        const b = pills.createEl('button', { cls: 'pn-cnrtl-source-pill', text: src.label });
+        b.addEventListener('click', () => show(src));
+        buttons.push({ b, id: src.id });
       });
+      // First source; if it has nothing (or fails), fall back to Wiktionary.
+      const ok = await show(SOURCES[0]).catch(() => false);
+      if (!ok) await show(SOURCES[1]);
     };
 
     searchBtn.addEventListener('click', doSearch);
     wordInput.addEventListener('keydown', (evt) => { if (evt.key === 'Enter') doSearch(); });
 
     this._prefillDefinitions = (word) => { wordInput.value = word; doSearch(); };
+  }
+
+  // Free Dictionary API block. Returns true when an entry was found.
+  async renderFreeDictionary(zone, word) {
+    const entry = await fetchFreeDictionaryEntry(word);
+    if (!entry || entry.groups.length === 0) return false;
+    if (entry.phonetics.length || entry.origin) {
+      const block = zone.createDiv({ cls: 'pn-cnrtl-bloc' });
+      if (entry.phonetics.length) {
+        block.createDiv({ cls: 'pn-cnrtl-titre', text: 'Pronunciation' });
+        block.createEl('p', { cls: 'pn-cnrtl-texte', text: entry.phonetics.join('  ·  ') });
+      }
+      if (entry.origin) {
+        block.createDiv({ cls: 'pn-cnrtl-titre', text: 'Origin' });
+        block.createEl('p', { cls: 'pn-cnrtl-texte', text: entry.origin });
+      }
+    }
+    entry.groups.forEach((g, i) => {
+      const det = zone.createEl('details', { cls: 'pn-cnrtl-details' });
+      if (i === 0) det.setAttr('open', 'true');
+      det.createEl('summary', { cls: 'pn-cnrtl-details-titre', text: `${g.pos} (${g.definitions.length})` });
+      const body = det.createDiv({ cls: 'pn-cnrtl-texte' });
+      const list = body.createEl('ol');
+      g.definitions.forEach((d) => {
+        const li = list.createEl('li', { text: d.text });
+        if (d.example) li.createDiv({ cls: 's-example', text: d.example });
+      });
+      const idx = this.plugin.cmudictIndex;
+      makeWordGroup(body, 'Synonyms', g.synonyms, 'pn-mot pn-mot-syno', idx, { type: 'syno' });
+      makeWordGroup(body, 'Antonyms', g.antonyms, 'pn-mot pn-mot-anto', idx, { type: 'anto' });
+    });
+    zone.createEl('a', { cls: 'pn-cnrtl-lien', text: 'Source: Wiktionary via dictionaryapi.dev (CC BY-SA)', attr: { href: 'https://dictionaryapi.dev/', target: '_blank', rel: 'noopener' } });
+    return true;
+  }
+
+  // Wiktionary page-extract block (the original parser). Returns true when
+  // an entry was found.
+  async renderWiktionaryDefinition(zone, word) {
+    const entry = await fetchWiktionaryEntry(word);
+    if (!entry) return false;
+    const url = `https://en.wiktionary.org/wiki/${encodeURIComponent(word)}`;
+    zone.createEl('a', { cls: 'pn-cnrtl-lien', text: `See "${word}" on Wiktionary →`, attr: { href: url, target: '_blank', rel: 'noopener' } });
+    if (entry.etymology) {
+      const block = zone.createDiv({ cls: 'pn-cnrtl-bloc' });
+      block.createDiv({ cls: 'pn-cnrtl-titre', text: 'Etymology' });
+      block.createEl('p', { cls: 'pn-cnrtl-texte', text: entry.etymology });
+    }
+    if (entry.definitions.length === 0) {
+      zone.createEl('p', { cls: 'pn-vide', text: 'No definitions parsed for this word — the Wiktionary page may use an unusual layout. Use the link above to read it directly.' });
+    }
+    entry.definitions.forEach((group, i) => {
+      const det = zone.createEl('details', { cls: 'pn-cnrtl-details' });
+      if (i === 0) det.setAttr('open', 'true');
+      det.createEl('summary', { cls: 'pn-cnrtl-details-titre', text: group.pos });
+      const body = det.createDiv({ cls: 'pn-cnrtl-texte' });
+      const numbered = group.lines.filter((l) => /^\d+\.\s/.test(l));
+      const list = body.createEl('ol');
+      (numbered.length > 0 ? numbered : group.lines).forEach((line) => list.createEl('li', { text: line.replace(/^\d+\.\s*/, '') }));
+    });
+    return true;
   }
   // ---- Guide tab (static reference content, no network) ----
   // Same structure as the French Guide: a table of contents box, then
@@ -2329,8 +2520,24 @@ class PoetsNotebookView extends ItemView {
   renderInspirationTab(panel) {
     const sourcesBox = panel.createDiv({ cls: 'pn-sources' });
     sourcesBox.createSpan({ cls: 'pn-sources-label', text: 'Complete online: ' });
-    const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse (means like)', (this.plugin.settings.onlineSources || []).includes('inspiration'),
-      'Adds loosely related words from Datamuse. Never queried unless checked.');
+    const datamuseToggle = makeTogglePill(sourcesBox, 'Datamuse', (this.plugin.settings.onlineSources || []).includes('inspiration'),
+      'Adds related words and collocations (adjectives used with the word, nouns it qualifies, words found near it) from Datamuse. Never queried unless checked.');
+
+    // Colour legend for the online groups (same presentation as the French
+    // plugin), closed by default.
+    const legend = panel.createEl('details', { cls: 'pn-hasard-stats-details pn-inspi-legende' });
+    legend.createEl('summary', { text: 'Show the legend' });
+    [
+      ['lexical', 'Related words', 'words with a similar meaning (Datamuse "means like")'],
+      ['carac', 'Often described as', 'adjectives frequently used with the word'],
+      ['parties', 'Often describes', 'nouns the word frequently qualifies'],
+      ['famille', 'Often found near', 'words statistically found close to it in text'],
+    ].forEach(([key, name, detail]) => {
+      const row = legend.createDiv({ cls: `pn-inspi-legende-ligne pn-nature-${key}` });
+      row.createSpan({ cls: 'pn-inspi-pastille' });
+      row.createSpan({ cls: 'pn-inspi-legende-nom', text: name });
+      row.createSpan({ cls: 'pn-inspi-legende-detail', text: ' — ' + detail });
+    });
 
     const form = panel.createDiv({ cls: 'pn-rime-form' });
     const wordInput = form.createEl('input', { attr: { type: 'text', placeholder: 'A theme… (e.g. forest, sea, night, love, time)' } });
@@ -2466,14 +2673,20 @@ class PoetsNotebookView extends ItemView {
     const onlineBody = makeSourceBlock(results, `${word} — Datamuse`, true, false);
     const status = onlineBody.createEl('p', { cls: 'pn-vide', text: 'Searching…' });
     try {
-      const related = await fetchDatamuseMeansLike(word);
+      const [related, coll] = await Promise.all([fetchDatamuseMeansLike(word), fetchDatamuseCollocations(word)]);
       status.remove();
-      if (related.length === 0) { onlineBody.createEl('p', { cls: 'pn-vide', text: `Nothing found on Datamuse for "${word}".` }); return; }
+      const groups = [
+        ['Related words', related, 'pn-nature-lexical'],
+        [`Often described as… (adjectives used with "${word}")`, coll.describedAs, 'pn-nature-carac'],
+        [`Often describes… (nouns "${word}" qualifies)`, coll.describes, 'pn-nature-parties'],
+        ['Often found near', coll.triggers, 'pn-nature-famille'],
+      ].filter(([, list]) => list.length > 0);
+      if (groups.length === 0) { onlineBody.createEl('p', { cls: 'pn-vide', text: `Nothing found on Datamuse for "${word}".` }); return; }
       const suggestedTheme = word.charAt(0).toUpperCase() + word.slice(1);
-      makeWordGroup(onlineBody, 'Related words', related, 'pn-mot pn-mot-inspi', this.plugin.cmudictIndex, {
-        extraCls: 'pn-nature-lexical',
+      groups.forEach(([title, list, nature]) => makeWordGroup(onlineBody, title, list, 'pn-mot pn-mot-inspi', this.plugin.cmudictIndex, {
+        extraCls: nature,
         onChip: (span, w) => makeSelectable(span, w, suggestedTheme, ''),
-      });
+      }));
     } catch (e) {
       status.setText('Datamuse: search impossible (no connection, site unreachable, or timeout).');
     }
