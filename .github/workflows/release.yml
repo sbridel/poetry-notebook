@@ -45,6 +45,10 @@ jobs:
           ' README.md > notes.md
           echo "name=[$VERSION]" >> "$GITHUB_OUTPUT"
 
+      - name: Run tests before releasing
+        if: steps.version.outputs.exists == 'false'
+        run: node test/run.js
+
       - name: Generate Artifact Attestation
         if: steps.version.outputs.exists == 'false'
         uses: actions/attest-build-provenance@v1

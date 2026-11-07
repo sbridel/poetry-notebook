@@ -1,0 +1,25 @@
+name: Tests
+
+# Runs the test suite (node test/run.js, no dependencies) on every push to
+# dev or main and on pull requests, and checks that main.js is up to date
+# with src/ (node build.js must not change it).
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: main.js matches src/
+        run: |
+          node build.js
+          git diff --exit-code main.js || (echo "main.js is out of date: run node build.js and commit it." && exit 1)
+      - name: Run tests
+        run: node test/run.js

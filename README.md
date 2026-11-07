@@ -292,6 +292,19 @@ tab, settings, plugin), assembled into `main.js` by plain concatenation:
 node build.js
 ```
 
+Tests (no dependencies, run against the built `main.js` and the repository's
+`cmudict.dict`):
+
+```
+node test/run.js
+```
+
+They cover syllables and meter, rhymes, whole-poem analysis, note import,
+fixed forms, sonorities, the parsing of online sources (with canned
+responses), personal-dictionary writes, and a smoke test that builds every
+tab. A GitHub workflow runs them on every push to `dev` or `main`, and the
+release workflow runs them again before publishing.
+
 Edit the files in `src/`, never `main.js` directly. `styles.css` stays at
 the repository root; its first section is generated from Carnet du Poète's
 stylesheet with the `cp-` prefix renamed `pn-` (the command is in the file's
