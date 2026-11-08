@@ -1,5 +1,7 @@
 # Poetry Notebook
 
+![Obsidian](https://img.shields.io/badge/Obsidian-Plugin-purple?logo=obsidian&logoColor=white) ![Downloads (latest release)](https://img.shields.io/github/downloads/sbridel/poetry-notebook/latest/total) ![Total downloads](https://img.shields.io/github/downloads/sbridel/poetry-notebook/total) ![Latest release](https://img.shields.io/github/v/release/sbridel/poetry-notebook) ![Tests](https://img.shields.io/github/actions/workflow/status/sbridel/poetry-notebook/test.yml?branch=main&label=tests) ![Last commit](https://img.shields.io/github/last-commit/sbridel/poetry-notebook?color=blue) ![License](https://img.shields.io/github/license/sbridel/poetry-notebook)
+
 An Obsidian plugin for writing and revising English poetry: syllable and meter
 analysis, rhyme search, synonyms and antonyms, definitions, thematic
 vocabulary, an experimental sound-pattern analyzer, and a quick-reference
